@@ -1,0 +1,10 @@
+{
+  "token": "MTQyNDU2OTMyMDY0MTUzMjAxNg.GaLkWj.u_GFoRi6c6xJa_1vOEz1QwvD2T-jSvVV6kE3TU",
+  "prefix": "!",
+  "lavalink": {
+    "host": "localhost",
+    "port": 2333,
+    "password": "youshallnotpass",
+    "secure": false
+  }
+}

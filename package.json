@@ -1,0 +1,24 @@
+{
+  "name": "music-bot",
+  "version": "1.0.0",
+  "description": "Bot Discord musique avec Moonlink.js",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@discordjs/voice": "^0.16.1",
+    "axios": "^1.12.2",
+    "discord.js": "^14.14.1",
+    "libsodium-wrappers": "^0.7.11",
+    "moonlink.js": "^4.60.18",
+    "node-fetch": "^2.7.0"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "music"
+  ],
+  "author": "",
+  "license": "ISC"
+}
