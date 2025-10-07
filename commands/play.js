@@ -117,7 +117,7 @@ module.exports = {
                 
                 try {
                     await player.connect({ setDeaf: true, setMute: false });
-                    console.log('✅ Connecté au salon vocal');
+                    console.log('✅ Connecté au salon vocal'); 
                     
                     // Attends que la connexion soit stable
                     await new Promise(resolve => setTimeout(resolve, 500));
