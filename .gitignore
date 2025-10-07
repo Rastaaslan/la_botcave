@@ -1,0 +1,14 @@
+# Variables d'environnement
+.env
+config.json
+
+# Dépendances
+node_modules/
+
+# Logs
+logs/
+*.log
+
+# Fichiers système
+.DS_Store
+Thumbs.db

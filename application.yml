@@ -5,24 +5,19 @@
 lavalink:
   plugins:
     - dependency: "dev.lavalink.youtube:youtube-plugin:1.14.0"
-      snapshot: false
     - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.1"
       repository: "https://maven.lavalink.dev/releases"
-      snapshot: false
   
   server:
-    password: "youshallnotpass"
+    password: "${LAVALINK_PASSWORD:youshallnotpass}"
     sources:
-      youtube: false  # ✅ Correct : désactivé car remplacé par youtube-plugin
+      youtube: false
       bandcamp: true
       soundcloud: true
       twitch: true
       vimeo: true
       http: true
       local: false
-    bufferDurationMs: 400
-    frameBufferDurationMs: 5000
-    youtubePlaylistLoadLimit: 6
 
 plugins:
   youtube:
@@ -37,54 +32,37 @@ plugins:
       - TVHTML5EMBEDDED
     oauth:
       enabled: true
-      refreshToken: "1//03p46regeD-A4CgYIARAAGAMSNwF-L9Ir8JazIZ5PZP_EFKwbqOQODowiyqEpO6uK8fSR9Onnfejy8IhBKkIktEEvoxz0nLDwwV0"  # ✅ Correction : token valide
+      refreshToken: "${YOUTUBE_REFRESH_TOKEN:}"
   
   lavasrc:
-    providers:  # ✅ Correction : ordre et formatage
-      - "ytsearch:\"%ISRC%\""
-      - "dzisrc:%ISRC%"
-      - "dzsearch:%QUERY%"
-      - "ytsearch:%QUERY%"
-      - "scsearch:%QUERY%"
-    
     sources:
       spotify: true
       applemusic: false
-      deezer: true
+      deezer: false
       yandexmusic: false
-      flowerytts: false
       youtube: true
     
     spotify:
-      clientId: "1fa9a563fbb34c09a2d8746799bcb530"
-      clientSecret: "7ec8b7af477d4a84a059a1d656f59b61"
+      clientId: "${SPOTIFY_CLIENT_ID}"
+      clientSecret: "${SPOTIFY_CLIENT_SECRET}"
       countryCode: "FR"
       playlistLoadLimit: 6
       albumLoadLimit: 6
     
-    deezer:
-      masterDecryptionKey: "g4el58wc0zvf9na1"
-      arl: "99000e0c05dd1a09aa038e41bbadb9b56881c846c3d15a812eb8d3808b60732445e794bc33406b1eb07aed48f3ccb1c784c6474d5487fe805aebbef507c226af39a2c573e081eb9c6616c510665fd1e83372da8fb4ee7ea9f2de15099669cc8c"
+    providers:
+      - "scsearch:%QUERY%"
+      - "ytsearch:%QUERY%"
 
 metrics:
   prometheus:
     enabled: false
-    endpoint: /metrics
 
 sentry:
   dsn: ""
-  environment: ""
 
 logging:
   file:
     path: ./logs/
-  
   level:
     root: INFO
     lavalink: INFO
-    dev.lavalink.youtube.http.YoutubeOauth2Handler: INFO
-  
-  logback:
-    rollingpolicy:
-      max-file-size: 10MB
-      max-history: 30

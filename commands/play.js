@@ -1,8 +1,9 @@
+require('dotenv').config();
 const axios = require('axios');
 
-const SPOTIFY_CLIENT_ID = '1fa9a563fbb34c09a2d8746799bcb530';
-const SPOTIFY_CLIENT_SECRET = '7ec8b7af477d4a84a059a1d656f59b61';
-
+// ✅ Variables d'environnement
+const SPOTIFY_CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
+const SPOTIFY_CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
 let spotifyToken = null;
 let spotifyTokenExpiry = 0;
 
@@ -21,7 +22,7 @@ async function getSpotifyToken() {
                 }
             }
         );
-        
+
         spotifyToken = response.data.access_token;
         spotifyTokenExpiry = Date.now() + (response.data.expires_in * 1000);
         return spotifyToken;
@@ -50,40 +51,42 @@ function isValidVideo(title, artistName, trackName) {
     const titleLower = title.toLowerCase();
     const artistLower = artistName.toLowerCase();
     const trackLower = trackName.toLowerCase();
-    
+
     const invalidKeywords = [
         'cover', 'karaoke', 'instrumental', 'piano', 'acoustic',
         'guitar', 'tutorial', 'lesson', 'reaction', 'review',
         'parody', 'minecraft', 'fortnite', 'roblox', 'nightcore'
     ];
-    
+
     for (const keyword of invalidKeywords) {
-        if (titleLower.includes(keyword) &&
-            !titleLower.includes('official') &&
+        if (titleLower.includes(keyword) && 
+            !titleLower.includes('official') && 
             !titleLower.includes(trackLower)) {
             return false;
         }
     }
-    
-    const hasArtist = titleLower.includes(artistLower) ||
-        titleLower.includes(artistLower.split(' ')[0]);
+
+    const hasArtist = titleLower.includes(artistLower) || 
+                      titleLower.includes(artistLower.split(' ')[0]);
     const hasTrack = titleLower.includes(trackLower);
-    
+
     return hasArtist || hasTrack;
 }
 
 module.exports = {
     name: 'play',
     description: 'Joue une musique',
+    
     async execute(message, args, client) {
         try {
             const query = args.join(' ');
+            
             if (!query) {
-                return message.reply('❌ Utilisation: `!play <chanson>`');
+                return message.reply('❌ Utilisation: `!play <URL ou recherche>`');
             }
 
             console.log('Query originale:', query);
-            
+
             const voiceChannel = message.member.voice.channel;
             if (!voiceChannel) {
                 return message.reply('❌ Tu dois être dans un salon vocal !');
@@ -104,13 +107,12 @@ module.exports = {
                     autoPlay: true,
                     volume: 100
                 });
-                console.log('Player créé');
                 
+                console.log('Player créé');
                 await player.connect();
                 console.log('✅ Connecté au salon vocal');
                 
                 player = client.manager.players.get(message.guild.id);
-                
                 if (!player) {
                     console.error('❌ Player non trouvé après création');
                     return message.reply('❌ Erreur de création du player');
@@ -126,28 +128,29 @@ module.exports = {
             if (spotifyTrackMatch) {
                 console.log('Lien Spotify détecté');
                 const trackId = spotifyTrackMatch[1];
-                
+
                 try {
                     const trackData = await getSpotifyTrack(trackId);
                     const artistName = trackData.artists[0].name;
                     const trackName = trackData.name;
                     const isrc = trackData.external_ids?.isrc;
-                    
+
                     spotifyInfo = { artistName, trackName, isrc };
+                    
                     console.log(`🎵 Spotify: "${trackName}" - "${artistName}"`);
                     if (isrc) {
                         console.log(`🔑 ISRC: ${isrc}`);
                     }
-                    
+
                     searchQuery = `${artistName} ${trackName}`;
                     console.log(`🔍 Recherche:`, searchQuery);
+                    
                 } catch (error) {
                     console.error('Erreur Spotify:', error);
                     return message.reply('❌ Erreur Spotify');
                 }
             }
 
-            // ✅ Utilise SoundCloud en priorité
             const res = await client.manager.search({
                 query: searchQuery,
                 source: 'soundcloud',
@@ -170,16 +173,17 @@ module.exports = {
 
             if (spotifyInfo) {
                 const { artistName, trackName } = spotifyInfo;
+
                 console.log(`\nTrouvé ${res.tracks.length} résultats`);
-                
+
                 const validTracks = [];
                 for (let i = 0; i < Math.min(res.tracks.length, 5); i++) {
                     const track = res.tracks[i];
                     const isValid = isValidVideo(track.title, artistName, trackName);
-                    
+
                     console.log(`${i + 1}. ${track.title}`);
                     console.log(`   → ${isValid ? '✓ VALIDE' : '✗ REJETÉ'}`);
-                    
+
                     if (isValid) {
                         validTracks.push(track);
                     }
@@ -190,7 +194,7 @@ module.exports = {
                 }
 
                 console.log(`\n✓ ${validTracks.length} track(s) valide(s)`);
-                
+
                 for (const track of validTracks) {
                     player.queue.add(track);
                 }
@@ -199,20 +203,22 @@ module.exports = {
                     console.log('🎬 Démarrage de la lecture...');
                     player.play();
                 }
-
+                
                 return message.reply(`✅ ${validTracks.length} track(s) SoundCloud ajouté(s)`);
+
             } else {
                 const track = res.tracks[0];
                 player.queue.add(track);
+
                 console.log(`📝 Track ajouté: ${track.title}`);
                 console.log(`📊 Queue size: ${player.queue.size}`);
                 console.log(`🔊 Player playing: ${player.playing}`);
-                
+
                 if (!wasPlaying) {
                     console.log('🎬 Démarrage de la lecture...');
                     player.play();
                 }
-
+                
                 return message.reply(`✅ Ajouté (SoundCloud): **${track.title}**`);
             }
 

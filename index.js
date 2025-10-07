@@ -1,7 +1,7 @@
+require('dotenv').config();
 const { Client, GatewayIntentBits, Collection } = require('discord.js');
 const { Manager } = require('moonlink.js');
 const fs = require('fs');
-const config = require('./config.json');
 
 const client = new Client({
     intents: [
@@ -15,6 +15,7 @@ const client = new Client({
 client.commands = new Collection();
 
 const commandFiles = fs.readdirSync('./commands').filter(file => file.endsWith('.js'));
+
 for (const file of commandFiles) {
     const command = require(`./commands/${file}`);
     client.commands.set(command.name, command);
@@ -22,15 +23,14 @@ for (const file of commandFiles) {
 
 client.manager = new Manager({
     nodes: [{
-        host: config.lavalink.host,
-        port: config.lavalink.port,
-        password: config.lavalink.password,
-        secure: config.lavalink.secure,
+        host: process.env.LAVALINK_HOST || 'localhost',
+        port: parseInt(process.env.LAVALINK_PORT) || 2333,
+        password: process.env.LAVALINK_PASSWORD || 'youshallnotpass',
+        secure: process.env.LAVALINK_SECURE === 'true',
     }],
     sendPayload: (guildId, payload) => {
         const guild = client.guilds.cache.get(guildId);
         if (guild) {
-            // ✅ CRITIQUE : JSON.parse EST NÉCESSAIRE selon le testBot officiel moonlink.js
             guild.shard.send(JSON.parse(payload));
         }
     },
@@ -106,14 +106,14 @@ client.on('raw', (data) => {
 });
 
 client.on('messageCreate', async (message) => {
-    if (message.author.bot || !message.content.startsWith(config.prefix)) return;
-    
-    const args = message.content.slice(config.prefix.length).trim().split(/ +/);
+    if (message.author.bot || !message.content.startsWith('!')) return;
+
+    const args = message.content.slice(1).trim().split(/ +/);
     const commandName = args.shift().toLowerCase();
+
     const command = client.commands.get(commandName);
-    
     if (!command) return;
-    
+
     try {
         await command.execute(message, args, client);
     } catch (error) {
@@ -122,4 +122,4 @@ client.on('messageCreate', async (message) => {
     }
 });
 
-client.login(config.token);
+client.login(process.env.DISCORD_TOKEN);
