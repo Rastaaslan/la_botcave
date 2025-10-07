@@ -121,5 +121,6 @@ client.on('messageCreate', async (message) => {
         message.reply('❌ Une erreur est survenue.');
     }
 });
-
+console.log('Token présent:', !!process.env.DISCORD_TOKEN);
+console.log('Token commence par:', process.env.DISCORD_TOKEN?.substring(0, 10));
 client.login(process.env.DISCORD_TOKEN);
