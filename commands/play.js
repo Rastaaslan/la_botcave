@@ -98,7 +98,7 @@ module.exports = {
             }
 
             let player = client.manager.players.get(message.guild.id);
-            
+
             if (!player) {
                 player = client.manager.createPlayer({
                     guildId: message.guild.id,
@@ -108,18 +108,25 @@ module.exports = {
                     volume: 100
                 });
                 
-                console.log('Player créé');
-                await player.connect();
-                console.log('✅ Connecté au salon vocal');
+                console.log('Player créé pour guild:', message.guild.id);
                 
-                player = client.manager.players.get(message.guild.id);
                 if (!player) {
-                    console.error('❌ Player non trouvé après création');
+                    console.error('❌ createPlayer a retourné undefined');
                     return message.reply('❌ Erreur de création du player');
                 }
                 
-                await new Promise(resolve => setTimeout(resolve, 1000));
+                try {
+                    await player.connect({ setDeaf: true, setMute: false });
+                    console.log('✅ Connecté au salon vocal');
+                    
+                    // Attends que la connexion soit stable
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                } catch (error) {
+                    console.error('❌ Erreur de connexion:', error);
+                    return message.reply('❌ Impossible de se connecter au salon vocal');
+                }
             }
+
 
             let searchQuery = query;
             let spotifyInfo = null;
