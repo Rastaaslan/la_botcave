@@ -105,7 +105,7 @@ module.exports = {
                     voiceChannelId: voiceChannel.id,
                     textChannelId: message.channel.id,
                     autoPlay: true,
-                    volume: 100
+                    volume: 35
                 });
                 
                 console.log('Player créé pour guild:', message.guild.id);
