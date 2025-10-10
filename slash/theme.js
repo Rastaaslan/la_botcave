@@ -1,5 +1,5 @@
 // slash/theme.js
-const { SlashCommandBuilder, PermissionsBitField } = require('discord.js');
+const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { buildEmbed } = require('../utils/embedHelper');
 const { getTheme, setTheme, resetTheme } = require('../utils/themeStore');
 const TYPES = ['info','success','warning','error'];
@@ -12,6 +12,8 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName('theme')
     .setDescription('Configurer le thème des embeds')
+    // Limite l’utilisation aux admins au niveau permissions par défaut
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(sc =>
       sc.setName('show').setDescription('Afficher le thème')
         .addStringOption(o => o.setName('type').setDescription('Type').addChoices(
@@ -44,10 +46,12 @@ module.exports = {
     const gid = interaction.guild.id;
     const sub = interaction.options.getSubcommand();
 
-    const needManage = ['set-color','set-emoji','set-default-color','set-icon','reset'].includes(sub);
-    if (needManage && !interaction.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+    // Vérification stricte côté runtime
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
       return interaction.reply({ ephemeral: true, embeds: [buildEmbed(gid, {
-        type: 'error', title: 'Permissions insuffisantes', description: 'Gérer le serveur requis.'
+        type: 'error',
+        title: 'Permissions insuffisantes',
+        description: 'Seuls les administrateurs peuvent utiliser /theme.'
       })]});
     }
 
@@ -61,7 +65,10 @@ module.exports = {
         })]});
       }
       const lines = Object.entries(theme.types).map(([k,v]) => `• ${k}: ${v.color} ${v.emoji || ''}`).join('\n');
-      return interaction.reply({ embeds: [buildEmbed(gid, { title: 'Thème actuel', description: `Couleur par défaut: ${theme.color}\nIcône: ${theme.iconURL || '—'}\n\nTypes:\n${lines}` })]});
+      return interaction.reply({ embeds: [buildEmbed(gid, {
+        title: 'Thème actuel',
+        description: `Couleur par défaut: ${theme.color}\nIcône: ${theme.iconURL || '—'}\n\nTypes:\n${lines}`
+      })]});
     }
 
     if (sub === 'set-color') {
