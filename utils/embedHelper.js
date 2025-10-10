@@ -1,21 +1,25 @@
 // utils/embedHelper.js
 const { EmbedBuilder } = require('discord.js');
-const { getTheme } = require('../utils/themeStore');
+const { getTheme } = require('./themeStore');
 
-function buildEmbed(guildId, { title, description, thumbnail, type = 'info', footer }) {
+function normalizeType(type) {
+  return ['info', 'success', 'warning', 'error'].includes((type || 'info')) ? type : 'info';
+}
+
+function buildEmbed(guildId, { title, description, thumbnail, type = 'info', footer, url }) {
   const theme = getTheme(guildId);
-  const color = (type === 'success' && theme.successColor)
-    ? theme.successColor
-    : (type === 'error' && theme.errorColor)
-      ? theme.errorColor
-      : theme.color;
+  const t = normalizeType(type);
+  const style = theme.types?.[t] || {};
+  const color = style.color || theme.color || '#0099ff';
+  const emoji = style.emoji || '';
 
   const embed = new EmbedBuilder()
     .setColor(color)
-    .setTitle(title || '')
+    .setTitle(`${emoji ? `${emoji} ` : ''}${title || ''}`.trim())
     .setDescription(description || '')
     .setTimestamp();
 
+  if (url) embed.setURL(url);
   if (theme.iconURL) embed.setAuthor({ name: theme.authorName || 'Player', iconURL: theme.iconURL });
   if (thumbnail) embed.setThumbnail(thumbnail);
   if (footer) embed.setFooter({ text: footer });
