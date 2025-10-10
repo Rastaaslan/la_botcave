@@ -46,7 +46,7 @@ function setTheme(guildId, patch) {
   return merged;
 }
 function resetTheme(guildId, type) {
-  if (!type) return setTheme(guildId, defaultTheme);
+  if (!type) { saveAll({ ...loadAll(), [guildId]: defaultTheme }); return defaultTheme; }
   const all = loadAll();
   const current = getTheme(guildId);
   current.types[type] = { ...defaultTheme.types[type] };

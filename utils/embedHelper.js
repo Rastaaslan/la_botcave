@@ -3,7 +3,8 @@ const { EmbedBuilder } = require('discord.js');
 const { getTheme } = require('./themeStore');
 
 function normalizeType(type) {
-  return ['info', 'success', 'warning', 'error'].includes((type || 'info')) ? type : 'info';
+  const t = (type || 'info').toLowerCase();
+  return ['info', 'success', 'warning', 'error'].includes(t) ? t : 'info';
 }
 
 function buildEmbed(guildId, { title, description, thumbnail, type = 'info', footer, url }) {
