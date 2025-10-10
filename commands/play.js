@@ -116,44 +116,46 @@ module.exports = {
 
       // Récupérer/créer le player
       let player = client.manager.players.get(guildId);
-      if (!player) {
-        player = client.manager.createPlayer({
-          guildId: guildId,
-          voiceChannelId: voiceChannel.id,
-          textChannelId: message.channel.id,
-          autoPlay: true,
-          volume: 35,
-        });
-
         if (!player) {
-          return message.reply({
-            embeds: [
-              buildEmbed(guildId, {
-                type: 'error',
-                title: 'Erreur lecteur',
-                description: 'Impossible de créer le player.',
-              }),
-            ],
-          });
+            player = client.manager.createPlayer({
+                guildId: guildId,
+                voiceChannelId: voiceChannel.id,
+                textChannelId: message.channel.id,
+                autoPlay: true,
+                volume: 35,
+            });
+
+            if (!player) {
+                return message.reply({
+                embeds: [
+                    buildEmbed(guildId, {
+                    type: 'error',
+                    title: 'Erreur lecteur',
+                    description: 'Impossible de créer le player.',
+                    }),
+                ],
+                });
+            }
         }
 
+            // Connexion vocale si non connectée
         try {
-          await player.connect({ setDeaf: true, setMute: false });
-          // petite pause pour stabiliser la connexion
-          await new Promise((r) => setTimeout(r, 500));
+            if (!player.connected) {
+                await player.connect(); // pas d’options, conforme aux exemples Moonlink
+                await new Promise((r) => setTimeout(r, 500)); // stabilisation
+            }
         } catch (e) {
-          console.error('Connexion vocal échouée:', e);
-          return message.reply({
-            embeds: [
-              buildEmbed(guildId, {
-                type: 'error',
-                title: 'Connexion impossible',
-                description: 'Impossible de se connecter au salon vocal.',
-              }),
-            ],
-          });
+            console.error('Connexion vocal échouée:', e);
+            return message.reply({
+                embeds: [
+                buildEmbed(guildId, {
+                    type: 'error',
+                    title: 'Connexion impossible',
+                    description: 'Impossible de se connecter au salon vocal.',
+                }),
+                ],
+            });
         }
-      }
 
       // Préparer la requête de recherche
       let searchQuery = query;

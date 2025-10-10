@@ -55,8 +55,14 @@ client.manager = new Manager({
   ],
   sendPayload: (guildId, payload) => {
     const guild = client.guilds.cache.get(guildId);
-    if (guild) guild.shard.send(payload);
-  },
+    if (!guild) return;
+    try {
+        const data = typeof payload === 'string' ? JSON.parse(payload) : payload;
+        guild.shard.send(data);
+    } catch (e) {
+        console.error('sendPayload JSON parse error:', e);
+    }
+ },
   autoPlay: true,
 });
 
