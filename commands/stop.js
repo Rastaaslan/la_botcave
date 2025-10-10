@@ -1,18 +1,18 @@
+const { buildEmbed } = require('../utils/embedHelper');
+
 module.exports = {
   name: 'stop',
-  description: 'Arrête la lecture et vide la file d\'attente',
+  description: 'Arrête la lecture et vide la file',
   execute(message, args, client) {
-    const player = client.manager.players.get(message.guild.id);
-    
+    const guildId = message.guild.id;
+    const player = client.manager.players.get(guildId);
     if (!player) {
-      return message.reply('❌ Rien ne joue actuellement !');
+      return message.reply({ embeds: [buildEmbed(guildId, { type: 'error', title: 'Aucune musique', description: 'Rien ne joue actuellement.' })]});
     }
-    
     if (message.member.voice.channel?.id !== player.voiceChannelId) {
-      return message.reply('❌ Vous devez être dans le même salon vocal que le bot !');
+      return message.reply({ embeds: [buildEmbed(guildId, { type: 'error', title: 'Salon vocal', description: 'Être dans le même salon que le bot.' })]});
     }
-    
     player.destroy();
-    message.reply('⏹️ Lecture arrêtée et file d\'attente vidée.');
+    return message.reply({ embeds: [buildEmbed(guildId, { type: 'success', title: 'Arrêt', description: 'Lecture arrêtée et file vidée.' })]});
   },
 };

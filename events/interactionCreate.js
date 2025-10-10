@@ -1,19 +1,17 @@
 module.exports = {
   name: 'interactionCreate',
-  execute(interaction, client) {
-    if (!interaction.isCommand()) return;
-    
-    const command = client.commands.get(interaction.commandName);
-    if (!command) return;
-    
-    try {
-      command.execute(interaction, client);
-    } catch (error) {
-      console.error(error);
-      interaction.reply({
-        content: 'Une erreur est survenue !',
-        ephemeral: true,
-      });
-    }
-  },
+  async execute(interaction, client) {
+    if (!interaction.isButton()) return;
+    const [ns, action] = interaction.customId.split(':');
+    if (ns !== 'player') return;
+
+    const player = client.manager.players.get(interaction.guild.id);
+    if (!player) return interaction.reply({ content: 'Aucun lecteur.', ephemeral: true });
+
+    if (action === 'skip') player.skip();
+    if (action === 'pause') player.pause();
+    if (action === 'resume') player.resume();
+
+    return interaction.deferUpdate();
+  }
 };

@@ -1,22 +1,21 @@
+const { buildEmbed } = require('../utils/embedHelper');
+
 module.exports = {
   name: 'resume',
   description: 'Reprend la lecture',
   execute(message, args, client) {
-    const player = client.manager.players.get(message.guild.id);
-    
+    const guildId = message.guild.id;
+    const player = client.manager.players.get(guildId);
     if (!player) {
-      return message.reply('❌ Rien ne joue actuellement !');
+      return message.reply({ embeds: [buildEmbed(guildId, { type: 'error', title: 'Aucune musique', description: 'Rien ne joue actuellement.' })]});
     }
-    
     if (message.member.voice.channel?.id !== player.voiceChannelId) {
-      return message.reply('❌ Vous devez être dans le même salon vocal que le bot !');
+      return message.reply({ embeds: [buildEmbed(guildId, { type: 'error', title: 'Salon vocal', description: 'Être dans le même salon que le bot.' })]});
     }
-    
     if (!player.paused) {
-      return message.reply('▶️ La lecture n\'est pas en pause.');
+      return message.reply({ embeds: [buildEmbed(guildId, { title: 'Déjà en lecture', description: 'La lecture n’est pas en pause.' })]});
     }
-    
     player.resume();
-    message.reply('▶️ Lecture reprise.');
+    return message.reply({ embeds: [buildEmbed(guildId, { type: 'success', title: 'Lecture reprise', description: 'La musique continue.' })]});
   },
 };

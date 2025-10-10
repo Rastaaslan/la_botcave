@@ -1,126 +1,123 @@
+// index.js
 require('dotenv').config();
+
 const { Client, GatewayIntentBits, Collection } = require('discord.js');
 const { Manager } = require('moonlink.js');
 const fs = require('fs');
+const path = require('path');
+const { buildEmbed } = require('./utils/embedHelper');
 
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildVoiceStates,
-    ],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates,
+  ],
 });
 
 client.commands = new Collection();
 
-const commandFiles = fs.readdirSync('./commands').filter(file => file.endsWith('.js'));
-
-for (const file of commandFiles) {
-    const command = require(`./commands/${file}`);
-    client.commands.set(command.name, command);
+// Chargement des commandes
+const commandsPath = path.join(__dirname, 'commands');
+if (fs.existsSync(commandsPath)) {
+  const commandFiles = fs.readdirSync(commandsPath).filter((f) => f.endsWith('.js'));
+  for (const file of commandFiles) {
+    const command = require(path.join(commandsPath, file));
+    if (command?.name) client.commands.set(command.name, command);
+  }
 }
 
+// Chargement des événements (ready, messageCreate, etc.)
+const eventsPath = path.join(__dirname, 'events');
+if (fs.existsSync(eventsPath)) {
+  const eventFiles = fs.readdirSync(eventsPath).filter((f) => f.endsWith('.js'));
+  for (const file of eventFiles) {
+    const evt = require(path.join(eventsPath, file));
+    if (!evt?.name || typeof evt.execute !== 'function') continue;
+    if (evt.once) {
+      client.once(evt.name, (...args) => evt.execute(...args, client));
+    } else {
+      client.on(evt.name, (...args) => evt.execute(...args, client));
+    }
+  }
+}
+
+// Moonlink Manager
 client.manager = new Manager({
-    nodes: [{
-        host: process.env.LAVALINK_HOST || 'localhost',
-        port: parseInt(process.env.LAVALINK_PORT) || 2333,
-        password: process.env.LAVALINK_PASSWORD || 'youshallnotpass',
-        secure: process.env.LAVALINK_SECURE === 'true',
-    }],
-    sendPayload: (guildId, payload) => {
-        const guild = client.guilds.cache.get(guildId);
-        if (guild) {
-            guild.shard.send(JSON.parse(payload));
-        }
+  nodes: [
+    {
+      host: process.env.LAVALINK_HOST || 'localhost',
+      port: parseInt(process.env.LAVALINK_PORT || '2333', 10),
+      password: process.env.LAVALINK_PASSWORD || 'youshallnotpass',
+      secure: process.env.LAVALINK_SECURE === 'true',
     },
-    autoPlay: true,
+  ],
+  sendPayload: (guildId, payload) => {
+    const guild = client.guilds.cache.get(guildId);
+    if (guild) guild.shard.send(payload);
+  },
+  autoPlay: true,
 });
 
-client.on('ready', () => {
-    console.log(`Connecté en tant que ${client.user.tag}`);
-    client.manager.init(client.user.id);
-    console.log('Moonlink Manager initialisé');
-});
-
+// Logs de node
 client.manager.on('nodeConnect', (node) => {
-    console.log(`✅ Node ${node.host} connecté`);
+  console.log(`✅ Node ${node.host} connecté`);
 });
 
 client.manager.on('nodeError', (node, error) => {
-    console.error(`❌ Erreur sur le node ${node.host}:`, error);
+  console.error(`❌ Erreur sur le node ${node.host}:`, error);
 });
 
-client.manager.on('trackEnd', (player, track, payload) => {
-    console.log(`Track terminé: ${track.title}`);
-    
-    if (payload.reason === 'loadFailed') {
-        const channel = client.channels.cache.get(player.textChannelId);
-        
-        if (player.queue.size > 0) {
-            console.log(`Essai de la vidéo suivante...`);
-            if (channel) {
-                channel.send(`⏭️ Vidéo bloquée, essai de la suivante...`);
-            }
-            player.play();
-        } else {
-            if (channel) {
-                channel.send(`❌ Aucune vidéo disponible.`);
-            }
-        }
-    }
-});
-
+// Événements de lecture avec embeds
 client.manager.on('trackStart', (player, track) => {
-    console.log(`🎵 Lecture : ${track.title}`);
-    const channel = client.channels.cache.get(player.textChannelId);
-    if (channel) {
-        channel.send(`🎵 **${track.title}**`);
-    }
+  const ch = client.channels.cache.get(player.textChannelId);
+  if (!ch) return;
+  ch.send({
+    embeds: [
+      buildEmbed(player.guildId, {
+        title: 'Lecture',
+        description: `🎵 ${track.title}`,
+        url: track.uri || null,
+        thumbnail: track.artworkUrl || null,
+      }),
+    ],
+  });
 });
 
-client.manager.on('trackError', (player, track, payload) => {
-    console.error(`❌ Erreur lecture: ${track.title}`);
-    const channel = client.channels.cache.get(player.textChannelId);
-    if (channel) {
-        channel.send(`❌ Impossible de lire **${track.title}**.`);
-    }
-    
-    if (player.queue.size > 0) {
-        player.play();
-    }
+client.manager.on('trackError', (player, track) => {
+  const ch = client.channels.cache.get(player.textChannelId);
+  if (ch) {
+    ch.send({
+      embeds: [
+        buildEmbed(player.guildId, {
+          type: 'error',
+          title: 'Erreur de lecture',
+          description: `Impossible de lire ${track?.title || 'la piste'}.`,
+        }),
+      ],
+    });
+  }
+  if (player.queue.size > 0) player.play();
 });
 
 client.manager.on('queueEnd', (player) => {
-    console.log('Queue terminée');
-    const channel = client.channels.cache.get(player.textChannelId);
-    if (channel) {
-        channel.send('✅ File d\'attente terminée !');
-    }
+  const ch = client.channels.cache.get(player.textChannelId);
+  if (!ch) return;
+  ch.send({
+    embeds: [
+      buildEmbed(player.guildId, {
+        title: 'File terminée',
+        description: 'Plus de pistes dans la file.',
+      }),
+    ],
+  });
 });
 
+// Pont d’événements bas-niveau
 client.on('raw', (data) => {
-    if (client.manager) {
-        client.manager.packetUpdate(data);
-    }
+  client.manager?.packetUpdate(data);
 });
 
-client.on('messageCreate', async (message) => {
-    if (message.author.bot || !message.content.startsWith('!')) return;
-
-    const args = message.content.slice(1).trim().split(/ +/);
-    const commandName = args.shift().toLowerCase();
-
-    const command = client.commands.get(commandName);
-    if (!command) return;
-
-    try {
-        await command.execute(message, args, client);
-    } catch (error) {
-        console.error('Erreur commande:', error);
-        message.reply('❌ Une erreur est survenue.');
-    }
-});
-console.log('Token présent:', !!process.env.DISCORD_TOKEN);
-console.log('Token commence par:', process.env.DISCORD_TOKEN?.substring(0, 10));
+// Connexion
 client.login(process.env.DISCORD_TOKEN);

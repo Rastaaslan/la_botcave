@@ -1,238 +1,289 @@
+// commands/play.js
 require('dotenv').config();
 const axios = require('axios');
+const { PermissionsBitField } = require('discord.js');
+const { buildEmbed } = require('../utils/embedHelper');
 
-// ✅ Variables d'environnement
+// Variables d'environnement Spotify
 const SPOTIFY_CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
 const SPOTIFY_CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
+
 let spotifyToken = null;
 let spotifyTokenExpiry = 0;
 
 async function getSpotifyToken() {
-    if (spotifyToken && Date.now() < spotifyTokenExpiry) {
-        return spotifyToken;
-    }
+  if (spotifyToken && Date.now() < spotifyTokenExpiry) return spotifyToken;
 
-    try {
-        const response = await axios.post('https://accounts.spotify.com/api/token',
-            'grant_type=client_credentials',
-            {
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Authorization': 'Basic ' + Buffer.from(SPOTIFY_CLIENT_ID + ':' + SPOTIFY_CLIENT_SECRET).toString('base64')
-                }
-            }
-        );
+  const body = 'grant_type=client_credentials';
+  const headers = {
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'Authorization':
+      'Basic ' +
+      Buffer.from(`${SPOTIFY_CLIENT_ID}:${SPOTIFY_CLIENT_SECRET}`).toString('base64'),
+  };
 
-        spotifyToken = response.data.access_token;
-        spotifyTokenExpiry = Date.now() + (response.data.expires_in * 1000);
-        return spotifyToken;
-    } catch (error) {
-        console.error('Erreur token Spotify:', error);
-        throw error;
-    }
+  const response = await axios.post('https://accounts.spotify.com/api/token', body, { headers });
+  spotifyToken = response.data.access_token;
+  spotifyTokenExpiry = Date.now() + response.data.expires_in * 1000;
+  return spotifyToken;
 }
 
 async function getSpotifyTrack(trackId) {
-    try {
-        const token = await getSpotifyToken();
-        const response = await axios.get(`https://api.spotify.com/v1/tracks/${trackId}`, {
-            headers: {
-                'Authorization': `Bearer ${token}`
-            }
-        });
-        return response.data;
-    } catch (error) {
-        console.error('Erreur track Spotify:', error);
-        throw error;
-    }
+  const token = await getSpotifyToken();
+  const response = await axios.get(`https://api.spotify.com/v1/tracks/${trackId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return response.data;
 }
 
+// Filtre simple pour éviter des vidéos non officielles
 function isValidVideo(title, artistName, trackName) {
-    const titleLower = title.toLowerCase();
-    const artistLower = artistName.toLowerCase();
-    const trackLower = trackName.toLowerCase();
+  const titleLower = title.toLowerCase();
+  const artistLower = artistName.toLowerCase();
+  const trackLower = trackName.toLowerCase();
 
-    const invalidKeywords = [
-        'cover', 'karaoke', 'instrumental', 'piano', 'acoustic',
-        'guitar', 'tutorial', 'lesson', 'reaction', 'review',
-        'parody', 'minecraft', 'fortnite', 'roblox', 'nightcore'
-    ];
+  const invalidKeywords = [
+    'cover', 'karaoke', 'instrumental', 'piano', 'acoustic',
+    'guitar', 'tutorial', 'lesson', 'reaction', 'review',
+    'parody', 'minecraft', 'fortnite', 'roblox', 'nightcore'
+  ];
 
-    for (const keyword of invalidKeywords) {
-        if (titleLower.includes(keyword) && 
-            !titleLower.includes('official') && 
-            !titleLower.includes(trackLower)) {
-            return false;
-        }
+  for (const keyword of invalidKeywords) {
+    if (titleLower.includes(keyword) &&
+        !titleLower.includes('official') &&
+        !titleLower.includes(trackLower)) {
+      return false;
     }
+  }
 
-    const hasArtist = titleLower.includes(artistLower) || 
-                      titleLower.includes(artistLower.split(' ')[0]);
-    const hasTrack = titleLower.includes(trackLower);
+  const hasArtist =
+    titleLower.includes(artistLower) ||
+    titleLower.includes(artistLower.split(' ')[0]);
+  const hasTrack = titleLower.includes(trackLower);
 
-    return hasArtist || hasTrack;
+  return hasArtist || hasTrack;
 }
 
 module.exports = {
-    name: 'play',
-    description: 'Joue une musique',
-    
-    async execute(message, args, client) {
-        try {
-            const query = args.join(' ');
-            
-            if (!query) {
-                return message.reply('❌ Utilisation: `!play <URL ou recherche>`');
-            }
+  name: 'play',
+  description: 'Joue une musique',
+  async execute(message, args, client) {
+    const guildId = message.guild.id;
 
-            console.log('Query originale:', query);
+    try {
+      const query = args.join(' ').trim();
+      if (!query) {
+        return message.reply({
+          embeds: [
+            buildEmbed(guildId, {
+              type: 'error',
+              title: 'Utilisation',
+              description: 'Utiliser: !play <recherche | url Spotify | url SoundCloud>',
+            }),
+          ],
+        });
+      }
 
-            const voiceChannel = message.member.voice.channel;
-            if (!voiceChannel) {
-                return message.reply('❌ Tu dois être dans un salon vocal !');
-            }
+      // Vérifier le salon vocal et permissions
+      const voiceChannel = message.member.voice.channel;
+      if (!voiceChannel) {
+        return message.reply({
+          embeds: [
+            buildEmbed(guildId, {
+              type: 'error',
+              title: 'Salon vocal requis',
+              description: 'Se connecter à un salon vocal pour lancer la lecture.',
+            }),
+          ],
+        });
+      }
 
-            const permissions = voiceChannel.permissionsFor(message.client.user);
-            if (!permissions.has('Connect') || !permissions.has('Speak')) {
-                return message.reply('❌ Je n\'ai pas les permissions !');
-            }
+      const perms = voiceChannel.permissionsFor(message.client.user);
+      if (
+        !perms?.has(PermissionsBitField.Flags.Connect) ||
+        !perms?.has(PermissionsBitField.Flags.Speak)
+      ) {
+        return message.reply({
+          embeds: [
+            buildEmbed(guildId, {
+              type: 'error',
+              title: 'Permissions manquantes',
+              description: 'Il faut les permissions Connect et Speak dans ce salon.',
+            }),
+          ],
+        });
+      }
 
-            let player = client.manager.players.get(message.guild.id);
+      // Récupérer/créer le player
+      let player = client.manager.players.get(guildId);
+      if (!player) {
+        player = client.manager.createPlayer({
+          guildId: guildId,
+          voiceChannelId: voiceChannel.id,
+          textChannelId: message.channel.id,
+          autoPlay: true,
+          volume: 35,
+        });
 
-            if (!player) {
-                player = client.manager.createPlayer({
-                    guildId: message.guild.id,
-                    voiceChannelId: voiceChannel.id,
-                    textChannelId: message.channel.id,
-                    autoPlay: true,
-                    volume: 35
-                });
-                
-                console.log('Player créé pour guild:', message.guild.id);
-                
-                if (!player) {
-                    console.error('❌ createPlayer a retourné undefined');
-                    return message.reply('❌ Erreur de création du player');
-                }
-                
-                try {
-                    await player.connect({ setDeaf: true, setMute: false });
-                    console.log('✅ Connecté au salon vocal'); 
-                    
-                    // Attends que la connexion soit stable
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                } catch (error) {
-                    console.error('❌ Erreur de connexion:', error);
-                    return message.reply('❌ Impossible de se connecter au salon vocal');
-                }
-            }
-
-
-            let searchQuery = query;
-            let spotifyInfo = null;
-
-            const spotifyTrackMatch = query.match(/spotify\.com\/track\/([a-zA-Z0-9]+)/);
-            if (spotifyTrackMatch) {
-                console.log('Lien Spotify détecté');
-                const trackId = spotifyTrackMatch[1];
-
-                try {
-                    const trackData = await getSpotifyTrack(trackId);
-                    const artistName = trackData.artists[0].name;
-                    const trackName = trackData.name;
-                    const isrc = trackData.external_ids?.isrc;
-
-                    spotifyInfo = { artistName, trackName, isrc };
-                    
-                    console.log(`🎵 Spotify: "${trackName}" - "${artistName}"`);
-                    if (isrc) {
-                        console.log(`🔑 ISRC: ${isrc}`);
-                    }
-
-                    searchQuery = `${artistName} ${trackName}`;
-                    console.log(`🔍 Recherche:`, searchQuery);
-                    
-                } catch (error) {
-                    console.error('Erreur Spotify:', error);
-                    return message.reply('❌ Erreur Spotify');
-                }
-            }
-
-            const res = await client.manager.search({
-                query: searchQuery,
-                source: 'soundcloud',
-                requester: message.author
-            });
-
-            console.log('Recherche SoundCloud, loadType:', res.loadType);
-            console.log('Nombre de tracks:', res.tracks?.length || 0);
-
-            if (!res || !res.tracks || res.tracks.length === 0 || res.loadType === 'empty') {
-                return message.reply('❌ Aucun résultat sur SoundCloud');
-            }
-
-            if (res.loadType === 'error') {
-                console.error('Erreur de recherche:', res.error);
-                return message.reply(`❌ Erreur: ${res.error}`);
-            }
-
-            const wasPlaying = player.playing;
-
-            if (spotifyInfo) {
-                const { artistName, trackName } = spotifyInfo;
-
-                console.log(`\nTrouvé ${res.tracks.length} résultats`);
-
-                const validTracks = [];
-                for (let i = 0; i < Math.min(res.tracks.length, 5); i++) {
-                    const track = res.tracks[i];
-                    const isValid = isValidVideo(track.title, artistName, trackName);
-
-                    console.log(`${i + 1}. ${track.title}`);
-                    console.log(`   → ${isValid ? '✓ VALIDE' : '✗ REJETÉ'}`);
-
-                    if (isValid) {
-                        validTracks.push(track);
-                    }
-                }
-
-                if (validTracks.length === 0) {
-                    return message.reply('❌ Aucune vidéo valide');
-                }
-
-                console.log(`\n✓ ${validTracks.length} track(s) valide(s)`);
-
-                for (const track of validTracks) {
-                    player.queue.add(track);
-                }
-
-                if (!wasPlaying) {
-                    console.log('🎬 Démarrage de la lecture...');
-                    player.play();
-                }
-                
-                return message.reply(`✅ ${validTracks.length} track(s) SoundCloud ajouté(s)`);
-
-            } else {
-                const track = res.tracks[0];
-                player.queue.add(track);
-
-                console.log(`📝 Track ajouté: ${track.title}`);
-                console.log(`📊 Queue size: ${player.queue.size}`);
-                console.log(`🔊 Player playing: ${player.playing}`);
-
-                if (!wasPlaying) {
-                    console.log('🎬 Démarrage de la lecture...');
-                    player.play();
-                }
-                
-                return message.reply(`✅ Ajouté (SoundCloud): **${track.title}**`);
-            }
-
-        } catch (error) {
-            console.error('Erreur play:', error);
-            console.error('Stack:', error.stack);
-            return message.reply('❌ Erreur lecture');
+        if (!player) {
+          return message.reply({
+            embeds: [
+              buildEmbed(guildId, {
+                type: 'error',
+                title: 'Erreur lecteur',
+                description: 'Impossible de créer le player.',
+              }),
+            ],
+          });
         }
+
+        try {
+          await player.connect({ setDeaf: true, setMute: false });
+          // petite pause pour stabiliser la connexion
+          await new Promise((r) => setTimeout(r, 500));
+        } catch (e) {
+          console.error('Connexion vocal échouée:', e);
+          return message.reply({
+            embeds: [
+              buildEmbed(guildId, {
+                type: 'error',
+                title: 'Connexion impossible',
+                description: 'Impossible de se connecter au salon vocal.',
+              }),
+            ],
+          });
+        }
+      }
+
+      // Préparer la requête de recherche
+      let searchQuery = query;
+      let spotifyInfo = null;
+
+      // Lien piste Spotify
+      const spotifyTrackMatch = query.match(/spotify\.com\/track\/([a-zA-Z0-9]+)/);
+      if (spotifyTrackMatch) {
+        const trackId = spotifyTrackMatch[1];
+        try {
+          const trackData = await getSpotifyTrack(trackId);
+          const artistName = trackData.artists?.[0]?.name || '';
+          const trackName = trackData.name || '';
+          const isrc = trackData.external_ids?.isrc || null;
+
+          spotifyInfo = { artistName, trackName, isrc };
+          searchQuery = `${artistName} ${trackName}`.trim();
+        } catch (e) {
+          console.error('Erreur Spotify:', e);
+          return message.reply({
+            embeds: [
+              buildEmbed(guildId, {
+                type: 'error',
+                title: 'Spotify',
+                description: 'Erreur lors de la récupération de la piste.',
+              }),
+            ],
+          });
+        }
+      }
+
+      // Recherche (SoundCloud dans votre implémentation actuelle)
+      const res = await client.manager.search({
+        query: searchQuery,
+        source: 'soundcloud',
+        requester: message.author,
+      });
+
+      if (
+        !res ||
+        !res.tracks ||
+        res.tracks.length === 0 ||
+        res.loadType === 'empty'
+      ) {
+        return message.reply({
+          embeds: [
+            buildEmbed(guildId, {
+              type: 'error',
+              title: 'Aucun résultat',
+              description: 'Aucun résultat trouvé pour cette recherche.',
+            }),
+          ],
+        });
+      }
+
+      if (res.loadType === 'error') {
+        const errMsg = res.error?.message || 'Erreur de recherche.';
+        return message.reply({
+          embeds: [
+            buildEmbed(guildId, {
+              type: 'error',
+              title: 'Erreur de recherche',
+              description: errMsg,
+            }),
+          ],
+        });
+      }
+
+      const wasPlaying = player.playing;
+
+      // Si lien Spotify → filtrer les meilleurs résultats
+      if (spotifyInfo) {
+        const { artistName, trackName } = spotifyInfo;
+        const top = res.tracks.slice(0, 5);
+        const validTracks = top.filter((t) =>
+          isValidVideo(t.title, artistName, trackName)
+        );
+
+        if (validTracks.length === 0) {
+          return message.reply({
+            embeds: [
+              buildEmbed(guildId, {
+                type: 'error',
+                title: 'Non trouvé',
+                description: 'Aucune vidéo valable correspondant au titre/artiste.',
+              }),
+            ],
+          });
+        }
+
+        for (const t of validTracks) player.queue.add(t);
+        if (!wasPlaying) player.play();
+
+        return message.reply({
+          embeds: [
+            buildEmbed(guildId, {
+              type: 'success',
+              title: 'Ajouté à la file',
+              description: `${validTracks.length} piste(s) ajoutée(s) depuis SoundCloud.`,
+            }),
+          ],
+        });
+      }
+
+      // Cas standard: ajouter la première piste
+      const track = res.tracks[0];
+      player.queue.add(track);
+      if (!wasPlaying) player.play();
+
+      return message.reply({
+        embeds: [
+          buildEmbed(guildId, {
+            type: 'success',
+            title: 'Ajouté (SoundCloud)',
+            description: track.title || 'Piste',
+            url: track.uri || null,
+          }),
+        ],
+      });
+    } catch (error) {
+      console.error('Erreur play:', error);
+      return message.reply({
+        embeds: [
+          buildEmbed(message.guild.id, {
+            type: 'error',
+            title: 'Erreur',
+            description: 'Une erreur est survenue pendant la lecture.',
+          }),
+        ],
+      });
     }
+  },
 };
