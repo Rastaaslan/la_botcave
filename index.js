@@ -16,30 +16,22 @@ const client = new Client({
   ],
 });
 
-client.commands = new Collection();
+// Espace pour les slash commands
 client.slashCommands = new Collection();
 
-// Chargement commandes préfixées (./commands)
-const commandsPath = path.join(__dirname, 'commands');
-if (fs.existsSync(commandsPath)) {
-  const commandFiles = fs.readdirSync(commandsPath).filter((f) => f.endsWith('.js'));
-  for (const file of commandFiles) {
-    const command = require(path.join(commandsPath, file));
-    if (command?.name) client.commands.set(command.name, command);
-  }
-}
-
-// Chargement slash commands (./slash)
+// Chargement des slash commands (./slash/*.js exportant { data, execute })
 const slashPath = path.join(__dirname, 'slash');
 if (fs.existsSync(slashPath)) {
   const files = fs.readdirSync(slashPath).filter((f) => f.endsWith('.js'));
   for (const file of files) {
     const cmd = require(path.join(slashPath, file));
-    if (cmd?.data && cmd?.execute) client.slashCommands.set(cmd.data.name, cmd);
+    if (cmd?.data && cmd?.execute) {
+      client.slashCommands.set(cmd.data.name, cmd);
+    }
   }
 }
 
-// Chargement événements (./events)
+// Chargement des événements (./events/*.js exportant { name, execute, once? })
 const eventsPath = path.join(__dirname, 'events');
 if (fs.existsSync(eventsPath)) {
   const eventFiles = fs.readdirSync(eventsPath).filter((f) => f.endsWith('.js'));
@@ -82,7 +74,7 @@ client.manager.on('nodeError', (node, error) => {
   console.error(`❌ Erreur sur le node ${node.host}:`, error);
 });
 
-// Événements musique
+// Événements musique → embeds
 client.manager.on('trackStart', (player, track) => {
   const ch = client.channels.cache.get(player.textChannelId);
   if (!ch) return;
@@ -97,6 +89,7 @@ client.manager.on('trackStart', (player, track) => {
     ],
   });
 });
+
 client.manager.on('trackError', (player, track) => {
   const ch = client.channels.cache.get(player.textChannelId);
   if (ch) {
@@ -112,6 +105,7 @@ client.manager.on('trackError', (player, track) => {
   }
   if (player.queue.size > 0) player.play();
 });
+
 client.manager.on('queueEnd', (player) => {
   const ch = client.channels.cache.get(player.textChannelId);
   if (!ch) return;
@@ -125,7 +119,7 @@ client.manager.on('queueEnd', (player) => {
   });
 });
 
-// Pont voix
+// Pont voix Discord → Moonlink
 client.on('raw', (data) => client.manager?.packetUpdate(data));
 
 // Connexion
