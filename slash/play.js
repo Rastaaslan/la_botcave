@@ -1,7 +1,7 @@
 // slash/play.js
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { buildEmbed } = require('../utils/embedHelper');
-const fetch = (...args) => import('node-fetch').then(({default: f}) => f(...args));
+const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
 
 /* =========================
    Constantes & Détection
@@ -93,7 +93,9 @@ async function scSearch(client, requester, q, limit, reqId) {
    ========================= */
 async function fetchText(url, reqId) {
   try {
-    const resp = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'text/html,application/xhtml+xml' }});
+    const resp = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'text/html,application/xhtml+xml' }
+    });
     if (!resp.ok) {
       logWarn(reqId, 'fetch:http', { url, status: resp.status });
       return null;
@@ -144,7 +146,7 @@ function normalizeSpotifyMeta(meta) {
    Méta via Lavalink, oEmbed YT, OG Spotify
    ========================= */
 async function getMetaFromUrl(client, requester, url, reqId) {
-  // 1) Lavalink (peut fournir méta pour YT/SP selon plugins)
+  // Lavalink (peut donner méta pour YT/SP selon plugins)
   try {
     logInfo(reqId, 'meta:url', url);
     const res = await client.manager.search({ query: url, requester });
@@ -158,7 +160,7 @@ async function getMetaFromUrl(client, requester, url, reqId) {
     logWarn(reqId, 'meta:lavalink:error', e?.message || String(e));
   }
 
-  // 2) oEmbed YouTube
+  // oEmbed YouTube
   if (isYouTubeUrl(url)) {
     try {
       const o = new URL('https://www.youtube.com/oembed');
@@ -167,10 +169,7 @@ async function getMetaFromUrl(client, requester, url, reqId) {
       const resp = await fetch(o.toString(), { headers: { 'Accept': 'application/json' } });
       if (resp.ok) {
         const data = await resp.json();
-        const meta = {
-          title: data?.title ? String(data.title) : '',
-          author: data?.author_name ? String(data.author_name) : ''
-        };
+        const meta = { title: String(data?.title || ''), author: String(data?.author_name || '') };
         logInfo(reqId, 'meta:oembed:ok', meta);
         if (meta.title || meta.author) return meta;
       } else {
@@ -181,7 +180,7 @@ async function getMetaFromUrl(client, requester, url, reqId) {
     }
   }
 
-  // 3) OG Spotify (page publique)
+  // OG Spotify
   if (isSpotifyTrackUrl(url)) {
     const html = await fetchText(url, reqId);
     if (html) {
@@ -195,7 +194,6 @@ async function getMetaFromUrl(client, requester, url, reqId) {
     }
   }
 
-  // 4) Pas de méta exploitable
   logWarn(reqId, 'meta:none:all');
   return null;
 }
@@ -230,7 +228,7 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery, reqId) {
   let best = null;
   let bestScore = 0;
 
-  // 1) Méta (Lavalink/oEmbed/OG)
+  // Méta (Lavalink/oEmbed/OG)
   if (isYouTubeUrl(urlOrQuery) || isSpotifyTrackUrl(urlOrQuery)) {
     const meta = await getMetaFromUrl(client, requester, urlOrQuery, reqId);
     if (meta) {
@@ -247,7 +245,7 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery, reqId) {
     }
   }
 
-  // 2) Fallback: URL -> texte ou nettoyage direct
+  // Fallback: URL -> texte ou chaîne nettoyée
   if (candidates.length === 0) {
     const cleaned = isUrl(urlOrQuery) ? deurlToText(urlOrQuery, reqId) : stripTitleNoise(urlOrQuery);
     if (cleaned) candidates.push(cleaned);
@@ -258,7 +256,7 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery, reqId) {
     return null;
   }
 
-  // 3) Variantes initiales (aucun guide en dur)
+  // Scoring générique
   for (const q of candidates) {
     const wantTokens = coreTokens(q);
     const tracks = await scSearch(client, requester, q, 10, reqId);
