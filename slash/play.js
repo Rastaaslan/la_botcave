@@ -21,9 +21,9 @@ function isYouTubeUrl(s)   { return typeof s === 'string' && /youtu\.be|youtube\
 function isSpotifyTrackUrl(s) {
   if (typeof s !== 'string') return false;
   // Support: /track/ID, /intl-fr/track/ID, /fr/track/ID, spotify:track:ID
-  return /https?:\/\/open\.spotify\.com\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?track\/[A-Za-z0-9]+/i.test(s)
+  return /https?:\/\/open\.spotify\.com\/(?:[a-z-]+\/)?track\/[A-Za-z0-9]+/i.test(s)
     || /^spotify:track:[A-Za-z0-9]+$/i.test(s);
-}  
+}
 
 /* =========================
    Logging helpers
