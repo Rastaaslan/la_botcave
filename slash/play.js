@@ -6,7 +6,7 @@ const { buildEmbed } = require('../utils/embedHelper');
 const SC_SET = /soundcloud\.com\/[^/]+\/sets\/[^/]+/i;
 const SC_TRACK = /soundcloud\.com\/[^/]+\/[^/]+/i;
 
-const YT_PLAYLIST = /(?:youtu\.be|youtube\.com).*?[?&]list=/i;             // ❌ non supporté
+const YT_PLAYLIST = /(?:youtu\.be|youtube\.com).*?[?&]list=/i; // ❌ non supporté
 const SP_PLAYLIST_OR_ALBUM = /(?:open\.spotify\.com\/(?:playlist|album)\/|spotify:(?:playlist|album):)/i; // ❌ non supporté
 
 const YT_VIDEO = /(?:youtu\.be\/([A-Za-z0-9_-]{6,})|youtube\.com\/watch\?v=([A-Za-z0-9_-]{6,}))/i;
@@ -16,46 +16,111 @@ function isUrl(s) {
   try { new URL(s); return true; } catch { return false; }
 }
 
-// Ajout par lots (utile si un set est volumineux)
+// Utils de normalisation et scoring pour améliorer le "rebond" vers SoundCloud
+function normalize(s) {
+  return (s || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // retirer les accents
+    .replace(/[-–—_]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function stripTitleNoise(title) {
+  let t = title || '';
+  t = t.replace(/(\(|\[|\{).+?(\)|\]|\})/g, ' '); // contenu entre (), [], {}
+  t = t.replace(/\bofficial\b|\bvideo\b|\blyrics?\b|\baudio\b|\bmv\b|\bhd\b|\buhd\b|\b4k\b|\bremaster(ed)?\b/ig, ' ');
+  t = t.replace(/\bfeat\.?\b|\bft\.?\b|\bwith\b/ig, ' ');
+  t = t.split('|')[0]; // enlever après un "|"
+  return normalize(t);
+}
+
+function stripArtistNoise(artist) {
+  return normalize((artist || '').replace(/\s*-\s*topic$/i, ''));
+}
+
+function jaccard(a, b) {
+  const A = new Set(normalize(a).split(' ').filter(Boolean));
+  const B = new Set(normalize(b).split(' ').filter(Boolean));
+  const inter = [...A].filter(x => B.has(x)).length;
+  const union = A.size + B.size - inter || 1;
+  return inter / union;
+}
+
+async function scSearch(client, requester, q, limit = 10) {
+  const res = await client.manager.search({
+    query: `scsearch:${q}`, // force SoundCloud
+    requester
+  });
+  return (res?.tracks || []).slice(0, limit);
+}
+
+async function getMetaFromUrl(client, requester, url) {
+  try {
+    const res = await client.manager.search({ query: url, requester });
+    return res?.tracks?.[0] || null;
+  } catch { return null; }
+}
+
+async function resolveToSoundCloudTrack(client, requester, urlOrQuery) {
+  let candidates = [];
+
+  // 1) URL YouTube/Spotify de piste -> extraire méta puis construire des requêtes SC
+  if (/youtu\.be|youtube\.com/i.test(urlOrQuery) || /open\.spotify\.com\/track|spotify:track:/i.test(urlOrQuery)) {
+    const src = await getMetaFromUrl(client, requester, urlOrQuery);
+    if (src) {
+      const artist = stripArtistNoise(src.author);
+      const title = stripTitleNoise(src.title);
+      const combos = [
+        `${artist} ${title}`,
+        `${title} ${artist}`,
+        `${title}`,
+        `${artist}`
+      ];
+      candidates.push(...combos.filter(Boolean));
+    }
+  }
+
+  // 2) Sinon, utiliser la chaîne telle quelle (nettoyée)
+  if (candidates.length === 0) {
+    const cleaned = stripTitleNoise(urlOrQuery);
+    candidates.push(cleaned || urlOrQuery);
+  }
+
+  // 3) Chercher plusieurs variantes et scorer les top résultats
+  let best = null;
+  let bestScore = 0;
+  for (const q of candidates) {
+    const tracks = await scSearch(client, requester, q, 8);
+    for (const t of tracks) {
+      const score =
+        0.6 * jaccard(t.title || '', q) +
+        0.4 * jaccard(t.author || '', q);
+      if (score > bestScore) {
+        best = t;
+        bestScore = score;
+      }
+    }
+    if (best && bestScore >= 0.35) break; // seuil raisonnable
+  }
+
+  // 4) Fallback: premier résultat de la dernière recherche
+  if (!best) {
+    const fallback = await scSearch(client, requester, candidates.at(-1), 1);
+    best = fallback[0] || null;
+  }
+  return best;
+}
+
 async function addInBatches(player, tracks, batchSize = 25) {
   let added = 0;
   for (let i = 0; i < tracks.length; i += batchSize) {
     const slice = tracks.slice(i, i + batchSize);
     for (const t of slice) player.queue.add(t);
     added += slice.length;
-    await new Promise(r => setTimeout(r, 120)); // petit délai anti-spam
+    await new Promise(r => setTimeout(r, 120));
   }
   return added;
-}
-
-// Rebond: résout une URL YouTube/Spotify en métadonnées puis cherche le meilleur match SoundCloud
-async function resolveToSoundCloudTrack(client, requester, urlOrQuery) {
-  // 1) Si URL YT/SP de piste: on résout d'abord pour obtenir titre/auteur
-  if (isUrl(urlOrQuery) && (YT_VIDEO.test(urlOrQuery) || SP_TRACK.test(urlOrQuery))) {
-    try {
-      const meta = await client.manager.search({ query: urlOrQuery, requester });
-      const srcTrack = meta?.tracks?.[0];
-      if (srcTrack) {
-        const author = (srcTrack.author || '').replace(/\s*-\s*Topic$/i, '').trim();
-        const title = (srcTrack.title || '').trim();
-        const scQuery = `${author} ${title}`.trim();
-        const sc = await client.manager.search({
-          query: scQuery,
-          source: 'soundcloud',
-          requester
-        });
-        if (sc?.tracks?.length) return sc.tracks[0];
-      }
-    } catch { /* on poursuit le fallback */ }
-  }
-
-  // 2) Sinon, on tente directement une recherche SoundCloud avec la chaîne fournie
-  const sc = await client.manager.search({
-    query: urlOrQuery,
-    source: 'soundcloud',
-    requester
-  });
-  return sc?.tracks?.[0] || null;
 }
 
 module.exports = {
@@ -108,7 +173,7 @@ module.exports = {
 
     await interaction.deferReply();
 
-    // ❌ Refus explicite: playlists/albums YouTube & Spotify
+    // ❌ Refus explicite: playlists & albums YouTube / Spotify
     if (isUrl(query) && (YT_PLAYLIST.test(query) || SP_PLAYLIST_OR_ALBUM.test(query))) {
       return interaction.editReply({
         embeds: [buildEmbed(gid, {
@@ -119,7 +184,7 @@ module.exports = {
       });
     }
 
-    // ✅ Playlists SoundCloud (sets) supportées
+    // ✅ Playlists SoundCloud (sets)
     if (isUrl(query) && SC_SET.test(query)) {
       const res = await client.manager.search({ query, requester: interaction.user });
       if (!res?.tracks?.length) {
@@ -147,9 +212,6 @@ module.exports = {
     }
 
     // 🎯 Rebond systématique vers SoundCloud
-    // - URL YouTube/Spotify de piste → on résout méta puis on cherche sur SoundCloud
-    // - URL SoundCloud de piste → on joue directement
-    // - Recherches texte → SoundCloud
     if (isUrl(query) && SC_TRACK.test(query)) {
       // URL piste SoundCloud: direct
       const res = await client.manager.search({ query, requester: interaction.user });
@@ -167,7 +229,7 @@ module.exports = {
       })]});
     }
 
-    // URL YT/SP de piste ou recherche générique → résolution SoundCloud
+    // URL YouTube/Spotify de piste OU recherche texte -> résolution SoundCloud
     const scTrack = await resolveToSoundCloudTrack(client, interaction.user, query);
     if (!scTrack) {
       return interaction.editReply({ embeds: [buildEmbed(gid, {
