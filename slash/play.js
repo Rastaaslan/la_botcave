@@ -25,7 +25,6 @@ function isSpotifyTrackUrl(s) { return typeof s === 'string' && /open\.spotify\.
    ========================= */
 function logInfo(reqId, tag, payload)  { console.log(LOG_PREFIX, reqId, tag, payload || ''); }
 function logWarn(reqId, tag, payload)  { console.warn(LOG_PREFIX, reqId, tag, payload || ''); }
-function logError(reqId, tag, payload) { console.error(LOG_PREFIX, reqId, tag, payload || ''); }
 
 /* =========================
    Normalisation & scoring (générique)
@@ -89,41 +88,37 @@ async function scSearch(client, requester, q, limit, reqId) {
 }
 
 /* =========================
-   HTTP helpers & OG parsing
+   Méta (une seule fois) via Lavalink / oEmbed YT / OG Spotify
    ========================= */
-async function fetchText(url, reqId) {
-  try {
-    const resp = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'text/html,application/xhtml+xml' }
-    });
-    if (!resp.ok) {
-      logWarn(reqId, 'fetch:http', { url, status: resp.status });
-      return null;
-    }
-    return await resp.text();
-  } catch (e) {
-    logWarn(reqId, 'fetch:error', e?.message || String(e));
+async function fetchYouTubeOEmbed(url, reqId) {
+  const o = new URL('https://www.youtube.com/oembed');
+  o.searchParams.set('url', url);
+  o.searchParams.set('format', 'json');
+  const resp = await fetch(o.toString(), { headers: { 'Accept': 'application/json' } });
+  if (!resp.ok) {
+    logWarn(reqId, 'oembedYT:http', { status: resp.status });
     return null;
   }
+  const data = await resp.json();
+  return { title: String(data?.title || ''), author: String(data?.author_name || '') };
 }
 
-function extractOg(content) {
-  if (!content) return {};
+async function fetchSpotifyOG(url, reqId) {
+  const resp = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'text/html,application/xhtml+xml' }
+  });
+  if (!resp.ok) {
+    logWarn(reqId, 'ogSP:http', { status: resp.status });
+    return null;
+  }
+  const html = await resp.text();
   const get = (prop) => {
-    const m = content.match(new RegExp(`<meta\\s+property=["']${prop}["']\\s+content=["']([^"']+)["']`, 'i'));
+    const m = html.match(new RegExp(`<meta\\s+property=["']${prop}["']\\s+content=["']([^"']+)["']`, 'i'));
     return m?.[1] || '';
   };
-  const titleTag = (content.match(/<title>([^<]+)<\/title>/i)?.[1] || '').trim();
-  return {
-    ogTitle: get('og:title'),
-    ogDescription: get('og:description'),
-    titleTag
-  };
-}
-
-function normalizeSpotifyMeta(meta) {
-  const raw = meta.ogTitle || meta.titleTag || '';
-  let title = raw.replace(/\s*\|\s*Spotify\s*$/i, '');
+  const titleTag = (html.match(/<title>([^<]+)<\/title>/i)?.[1] || '').trim();
+  const ogTitle = get('og:title') || titleTag;
+  let title = ogTitle.replace(/\s*\|\s*Spotify\s*$/i, '');
   let artist = '';
   let m = title.match(/\s*-\s*song(?:\s+and\s+lyrics)?\s+by\s+(.+)$/i);
   if (m) {
@@ -136,101 +131,63 @@ function normalizeSpotifyMeta(meta) {
       title = title.replace(/\s*·\s*(?:single|album|ep)\s+by\s+.+$/i, '');
     }
   }
-  return {
-    title: stripTitleNoise(title),
-    artist: stripArtistNoise(artist)
-  };
+  return { title: stripTitleNoise(title), author: stripArtistNoise(artist) };
 }
 
-/* =========================
-   Méta via Lavalink, oEmbed YT, OG Spotify
-   ========================= */
-async function getMetaFromUrl(client, requester, url, reqId) {
-  // Lavalink (peut donner méta pour YT/SP selon plugins)
+async function getMetaOnce(client, requester, url, reqId) {
+  // 1) Lavalink: juste pour méta (jamais d’ajout)
   try {
-    logInfo(reqId, 'meta:url', url);
     const res = await client.manager.search({ query: url, requester });
     const t = res?.tracks?.[0];
     if (t) {
-      logInfo(reqId, 'meta:lavalink:ok', { title: t.title, author: t.author });
-      return { title: t.title || '', author: t.author || '' };
+      const meta = { title: t.title || '', author: t.author || '' };
+      logInfo(reqId, 'meta:lavalink', meta);
+      return meta;
     }
-    logWarn(reqId, 'meta:lavalink:none');
   } catch (e) {
     logWarn(reqId, 'meta:lavalink:error', e?.message || String(e));
   }
 
-  // oEmbed YouTube
+  // 2) YouTube oEmbed
   if (isYouTubeUrl(url)) {
     try {
-      const o = new URL('https://www.youtube.com/oembed');
-      o.searchParams.set('url', url);
-      o.searchParams.set('format', 'json');
-      const resp = await fetch(o.toString(), { headers: { 'Accept': 'application/json' } });
-      if (resp.ok) {
-        const data = await resp.json();
-        const meta = { title: String(data?.title || ''), author: String(data?.author_name || '') };
-        logInfo(reqId, 'meta:oembed:ok', meta);
-        if (meta.title || meta.author) return meta;
-      } else {
-        logWarn(reqId, 'meta:oembed:http', { status: resp.status });
+      const meta = await fetchYouTubeOEmbed(url, reqId);
+      if (meta && (meta.title || meta.author)) {
+        logInfo(reqId, 'meta:oembedYT', meta);
+        return meta;
       }
-    } catch (e) {
-      logWarn(reqId, 'meta:oembed:error', e?.message || String(e));
-    }
+    } catch (e) { logWarn(reqId, 'meta:oembedYT:error', e?.message || String(e)); }
   }
 
-  // OG Spotify
+  // 3) Spotify OG
   if (isSpotifyTrackUrl(url)) {
-    const html = await fetchText(url, reqId);
-    if (html) {
-      const og = extractOg(html);
-      const parsed = normalizeSpotifyMeta(og);
-      if (parsed.title || parsed.artist) {
-        logInfo(reqId, 'meta:spotifyOG:ok', parsed);
-        return { title: parsed.title, author: parsed.artist };
+    try {
+      const meta = await fetchSpotifyOG(url, reqId);
+      if (meta && (meta.title || meta.author)) {
+        logInfo(reqId, 'meta:ogSP', meta);
+        return meta;
       }
-      logWarn(reqId, 'meta:spotifyOG:empty', og);
-    }
+    } catch (e) { logWarn(reqId, 'meta:ogSP:error', e?.message || String(e)); }
   }
 
-  logWarn(reqId, 'meta:none:all');
+  // 4) Rien trouvé
+  logWarn(reqId, 'meta:none');
   return null;
 }
 
 /* =========================
-   URL -> texte neutre
-   ========================= */
-function deurlToText(s, reqId) {
-  try {
-    const u = new URL(s);
-    const hostWords = (u.hostname || '').replace(/^www\./, '').split('.').join(' ');
-    const pathWords = (u.pathname || '').replace(/[\/_]+/g, ' ');
-    const searchWords = (u.search || '').replace(/[?&=]+/g, ' ');
-    const raw = `${hostWords} ${pathWords} ${searchWords}`;
-    const out = normalize(raw.replace(/\b(youtube|youtu|watch|v|list|feature|si|index|t)\b/gi, ''));
-    logInfo(reqId, 'deurlToText', out);
-    return out;
-  } catch {
-    const out = normalize(s.replace(/https?:\/\/\S+/g, ' '));
-    logInfo(reqId, 'deurlToText:fallback', out);
-    return out;
-  }
-}
-
-/* =========================
-   Rebond URL piste -> SoundCloud (générique)
+   Résolution URL/texte -> piste SC (sans re‑interroger l’URL)
    ========================= */
 async function resolveToSoundCloudTrack(client, requester, urlOrQuery, reqId) {
   logInfo(reqId, 'resolve:start', { input: urlOrQuery });
 
-  let candidates = [];
+  const candidates = [];
   let best = null;
   let bestScore = 0;
 
-  // Méta (Lavalink/oEmbed/OG)
-  if (isYouTubeUrl(urlOrQuery) || isSpotifyTrackUrl(urlOrQuery)) {
-    const meta = await getMetaFromUrl(client, requester, urlOrQuery, reqId);
+  // Si c’est une URL YT/SP, extraire méta UNE FOIS
+  if (isUrl(urlOrQuery) && (isYouTubeUrl(urlOrQuery) || isSpotifyTrackUrl(urlOrQuery))) {
+    const meta = await getMetaOnce(client, requester, urlOrQuery, reqId);
     if (meta) {
       const artist = stripArtistNoise(meta.author);
       const title  = stripTitleNoise(meta.title);
@@ -240,23 +197,28 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery, reqId) {
         `${title}`,
         `${artist}`
       ].filter(Boolean);
-      logInfo(reqId, 'candidates:meta', combos);
+      logInfo(reqId, 'candidates:fromMeta', combos);
       candidates.push(...combos);
+    } else {
+      // Pas de méta: on ne réinterroge PAS l’URL; on n’utilise pas sa clé.
+      // On se rabat sur une chaîne neutre extraite de la saisie utilisateur, si ce n’est pas une URL.
+      if (!isUrl(urlOrQuery)) {
+        const cleaned = stripTitleNoise(urlOrQuery);
+        if (cleaned) candidates.push(cleaned);
+        logInfo(reqId, 'candidates:fromText', candidates);
+      } else {
+        logWarn(reqId, 'noMeta:noTextFallback');
+      }
     }
-  }
-
-  // Fallback: URL -> texte ou chaîne nettoyée
-  if (candidates.length === 0) {
-    const cleaned = isUrl(urlOrQuery) ? deurlToText(urlOrQuery, reqId) : stripTitleNoise(urlOrQuery);
+  } else {
+    // Entrée texte: utiliser telle quelle (nettoyée)
+    const cleaned = stripTitleNoise(urlOrQuery);
     if (cleaned) candidates.push(cleaned);
-    logInfo(reqId, 'candidates:fallback', candidates);
-  }
-  if (candidates.length === 0) {
-    logWarn(reqId, 'resolve:abort no candidates');
-    return null;
+    logInfo(reqId, 'candidates:text', candidates);
   }
 
-  // Scoring générique
+  if (candidates.length === 0) return null;
+
   for (const q of candidates) {
     const wantTokens = coreTokens(q);
     const tracks = await scSearch(client, requester, q, 10, reqId);
@@ -476,7 +438,7 @@ module.exports = {
       });
     }
 
-    // Lien YT/SP piste OU recherche texte → rebond SoundCloud (Lavalink/oEmbed/OG)
+    // Rebond: si URL YT/SP → utiliser UNIQUEMENT la méta (si dispo), sinon rien
     const scTrack = await resolveToSoundCloudTrack(client, interaction.user, query, reqId);
     if (!scTrack) {
       logWarn(reqId, 'resolve:none', { query });
