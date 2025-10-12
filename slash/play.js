@@ -48,8 +48,9 @@ function jaccard(a, b) {
 }
 
 async function scSearch(client, requester, q, limit = 10) {
+  // IMPORTANT: pas de "source" ici, juste un identifiant scsearch:texte
   const res = await client.manager.search({
-    query: `scsearch:${q}`, // force SoundCloud
+    query: `scsearch:${q}`,
     requester
   });
   return (res?.tracks || []).slice(0, limit);
@@ -57,6 +58,7 @@ async function scSearch(client, requester, q, limit = 10) {
 
 async function getMetaFromUrl(client, requester, url) {
   try {
+    // URL brute: laisser Lavalink détecter la source pour extraire les métadonnées
     const res = await client.manager.search({ query: url, requester });
     return res?.tracks?.[0] || null;
   } catch { return null; }
