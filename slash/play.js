@@ -19,8 +19,11 @@ function isYouTubeUri(uri) { return typeof uri === 'string' && /youtu\.be|youtub
 function isYouTubeUrl(s)  { return typeof s === 'string' && /youtu\.be|youtube\.com/i.test(s); }
 function isSpotifyTrackUrl(s) {
   if (typeof s !== 'string') return false;
-  // couvre open.spotify.com/track/ID et open.spotify.com/{locale}/track/ID
-  return /https?:\/\/open\.spotify\.com\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?track\/[A-Za-z0-9]+/i.test(s) || /^spotify:track:[A-Za-z0-9]+$/i.test(s);
+  // open.spotify.com/track/ID
+  // open.spotify.com/intl-fr/track/ID
+  // spotify:track:ID
+  return /https?:\/\/open\.spotify\.com\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?track\/[A-Za-z0-9]+/i.test(s)
+      || /^spotify:track:[A-Za-z0-9]+$/i.test(s);
 }
 function logInfo(reqId, tag, payload)  { console.log(LOG_PREFIX, reqId, tag, payload || ''); }
 function logWarn(reqId, tag, payload)  { console.warn(LOG_PREFIX, reqId, tag, payload || ''); }
