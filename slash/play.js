@@ -268,8 +268,9 @@ async function fetchAppleMusicAlbumTracks(url, reqId) {
     }
     
     const tracks = [];
+    const seenIds = new Set();
     
-    // Méthode principale: Chercher le JSON serialisé dans window.INITIAL_DATA, serializedData, etc.
+    // Méthode principale: Chercher le JSON serialisé
     const dataPatterns = [
       /window\s*\[\s*["']INITIAL_DATA["']\s*\]\s*=\s*({[\s\S]*?});/,
       /window\.__INITIAL_STATE__\s*=\s*({[\s\S]*?});/,
@@ -284,7 +285,7 @@ async function fetchAppleMusicAlbumTracks(url, reqId) {
       if (match) {
         try {
           parsedData = JSON.parse(match[1]);
-          logInfo(reqId, 'album:AM:dataFound', { pattern: pattern.source.substring(0, 50) });
+          logInfo(reqId, 'album:AM:dataFound', { pattern: pattern.source.substring(0, 30) });
           break;
         } catch (e) {
           continue;
@@ -292,65 +293,71 @@ async function fetchAppleMusicAlbumTracks(url, reqId) {
       }
     }
     
-    // Si on a trouvé des données, les parcourir
+    // Si on a trouvé des données, les parcourir complètement
     if (parsedData) {
-      const extractTracksRecursive = (obj, depth = 0) => {
-        if (depth > 10 || !obj || typeof obj !== 'object') return;
+      const extractTracksRecursive = (obj, depth = 0, visited = new Set()) => {
+        if (depth > 15 || !obj || typeof obj !== 'object') return;
         
-        // Chercher les patterns de tracks
-        if (obj.type === 'songs' || obj.type === 'song') {
-          if (obj.attributes?.name) {
+        // Éviter les cycles infinis
+        const objId = JSON.stringify(obj).substring(0, 100);
+        if (visited.has(objId)) return;
+        visited.add(objId);
+        
+        // Type = songs ou song
+        if ((obj.type === 'songs' || obj.type === 'song') && obj.attributes?.name) {
+          const trackId = obj.id || obj.attributes.name;
+          if (!seenIds.has(trackId)) {
+            seenIds.add(trackId);
             tracks.push({
               title: obj.attributes.name,
-              author: obj.attributes.artistName || artistName || 'Unknown Artist'
+              author: obj.attributes.artistName || artistName || 'Unknown Artist',
+              trackNumber: obj.attributes.trackNumber || tracks.length + 1
+            });
+            logInfo(reqId, 'album:AM:trackFound', { 
+              num: tracks.length, 
+              title: obj.attributes.name,
+              artist: obj.attributes.artistName || artistName
             });
           }
+          return; // Ne pas continuer la récursion pour cet objet
         }
         
-        // Chercher dans relationships.tracks
-        if (obj.relationships?.tracks?.data) {
-          const trackRefs = Array.isArray(obj.relationships.tracks.data) 
-            ? obj.relationships.tracks.data 
-            : [obj.relationships.tracks.data];
-          for (const ref of trackRefs) {
-            if (ref.id) {
-              logInfo(reqId, 'album:AM:trackRefFound', { id: ref.id });
+        // Parcourir tous les champs
+        for (const key in obj) {
+          const value = obj[key];
+          
+          // Arrays
+          if (Array.isArray(value)) {
+            for (const item of value) {
+              extractTracksRecursive(item, depth + 1, visited);
             }
           }
-        }
-        
-        // Parcourir récursivement
-        for (const key in obj) {
-          if (key === 'included' || key === 'data' || key === 'songs' || key === 'tracks') {
-            if (Array.isArray(obj[key])) {
-              for (const item of obj[key]) {
-                extractTracksRecursive(item, depth + 1);
-              }
-            } else {
-              extractTracksRecursive(obj[key], depth + 1);
-            }
+          // Objects
+          else if (value && typeof value === 'object') {
+            extractTracksRecursive(value, depth + 1, visited);
           }
         }
       };
       
-      extractTracksRecursive(parsedData);
+      extractTracksRecursive(parsedData, 0, new Set());
     }
     
-    // Fallback: Utiliser l'API officielle Apple Music (nécessite un token mais peut fonctionner avec un token public)
-    if (tracks.length === 0) {
-      logWarn(reqId, 'album:AM:noTracksInHTML', { tryingAPI: true });
+    // Trier par trackNumber si disponible
+    if (tracks.length > 1 && tracks[0].trackNumber) {
+      tracks.sort((a, b) => (a.trackNumber || 0) - (b.trackNumber || 0));
+    }
+    
+    // Fallback: Si on a trouvé seulement quelques tracks, essayer l'API
+    if (tracks.length > 0 && tracks.length < 5) {
+      logWarn(reqId, 'album:AM:fewTracks', { found: tracks.length, tryingAPI: true });
       
-      // Extraire l'ID de l'album depuis l'URL
       const albumIdMatch = url.match(/\/album\/[^\/]+\/(\d+)/);
       if (albumIdMatch) {
         const albumId = albumIdMatch[1];
         const region = url.match(/music\.apple\.com\/([a-z]{2})\//)?.[1] || 'us';
         
-        // Essayer de récupérer depuis l'API publique (peut ne pas fonctionner sans token)
         try {
           const apiUrl = `https://amp-api.music.apple.com/v1/catalog/${region}/albums/${albumId}`;
-          logInfo(reqId, 'album:AM:tryingAPI', { apiUrl });
-          
           const apiRes = await fetch(apiUrl, {
             headers: {
               'Origin': 'https://music.apple.com',
@@ -363,7 +370,8 @@ async function fetchAppleMusicAlbumTracks(url, reqId) {
             const apiData = await apiRes.json();
             if (apiData.data?.[0]?.relationships?.tracks?.data) {
               for (const track of apiData.data[0].relationships.tracks.data) {
-                if (track.attributes?.name) {
+                if (track.attributes?.name && !seenIds.has(track.id)) {
+                  seenIds.add(track.id);
                   tracks.push({
                     title: track.attributes.name,
                     author: track.attributes.artistName || artistName
@@ -378,15 +386,8 @@ async function fetchAppleMusicAlbumTracks(url, reqId) {
       }
     }
     
-    // Si toujours rien, créer une liste générique basée sur le nom de l'album
-    if (tracks.length === 0 && artistName) {
-      logWarn(reqId, 'album:AM:fallbackSearch', { album: albumName, artist: artistName });
-      // Retourner au moins une recherche générique
-      tracks.push({
-        title: albumName,
-        author: artistName
-      });
-    }
+    // Nettoyer les trackNumbers avant de retourner
+    tracks.forEach(t => delete t.trackNumber);
     
     logInfo(reqId, 'album:AM:found', { name: albumName, artist: artistName, count: tracks.length });
     return { name: `${albumName}${artistName ? ' - ' + artistName : ''}`, tracks };
