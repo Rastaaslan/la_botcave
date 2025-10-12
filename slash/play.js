@@ -153,36 +153,6 @@ async function fetchSpotifyOG(url, reqId) {
   return { title: stripTitleNoise(title), author: stripArtistNoise(artist) };
 }
 
-async function fetchAppleMusicOG(url, reqId) {
-  logInfo(reqId, 'meta:ogAM:start', { url });
-  try {
-    const res = await fetch(url, { 
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      redirect: 'follow'
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const html = await res.text();
-    
-    const titleMatch = html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i);
-    const artistMatch = html.match(/<meta\s+property="music:musician"\s+content="([^"]+)"/i)
-      || html.match(/<meta\s+name="apple:content_artist"\s+content="([^"]+)"/i);
-    
-    if (!titleMatch) return null;
-    
-    const meta = {
-      title: stripTitleNoise(titleMatch[1].trim()),
-      author: artistMatch ? stripArtistNoise(artistMatch[1].trim()) : 'Unknown Artist'
-    };
-    
-    logInfo(reqId, 'meta:ogAM:found', meta);
-    return meta;
-  }
-  catch (err) {
-    logWarn(reqId, 'meta:ogAM:error', err?.message || String(err));
-    return null;
-  }
-}
-
 async function getMetaOnce(client, requester, url, reqId) {
   try {
     const res = await client.manager.search({ query: url, requester });
