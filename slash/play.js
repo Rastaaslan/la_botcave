@@ -21,7 +21,8 @@ function isYouTubeUrl(s)   { return typeof s === 'string' && /youtu\.be|youtube\
 function isSpotifyTrackUrl(s) {
   if (typeof s !== 'string') return false;
   // open.spotify.com/track/ID
-  // open.spotify.com/intl-fr/track/ID (locale optionnelle)
+  // open.spotify.com/intl-fr/track/ID
+  // open.spotify.com/fr/track/ID
   // spotify:track:ID
   return /https?:\/\/open\.spotify\.com\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?track\/[A-Za-z0-9]+/i.test(s)
       || /^spotify:track:[A-Za-z0-9]+$/i.test(s);
@@ -91,7 +92,7 @@ async function scSearch(client, requester, q, limit, reqId) {
 }
 
 /* =========================
-   Méta (unique) via Lavalink / oEmbed YT / OG Spotify
+   Méta unique (Lavalink / oEmbed YT / OG Spotify)
    ========================= */
 async function fetchYouTubeOEmbed(url, reqId) {
   const o = new URL('https://www.youtube.com/oembed');
