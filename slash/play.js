@@ -175,7 +175,6 @@ async function fetchAppleMusicOG(url, reqId) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const html = await res.text();
     
-    // Extraire le titre og:title ou <title>
     const titleMatch = html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i)
       || html.match(/<title>([^<]+)<\/title>/i);
     
@@ -188,13 +187,11 @@ async function fetchAppleMusicOG(url, reqId) {
     let title = '';
     let author = '';
     
-    // Format français: "TITRE par ARTISTE sur Apple Music"
     let match = rawTitle.match(/^(.+?)\s+par\s+(.+?)\s+sur\s+Apple\s+Music$/i);
     if (match) {
       title = match[1].trim();
       author = match[2].trim();
     }
-    // Format anglais: "TITRE by ARTIST on Apple Music"
     else {
       match = rawTitle.match(/^(.+?)\s+by\s+(.+?)\s+on\s+Apple\s+Music$/i);
       if (match) {
@@ -203,14 +200,12 @@ async function fetchAppleMusicOG(url, reqId) {
       }
     }
     
-    // Format alternatif: "TITRE - ARTISTE"
     if (!title && rawTitle.includes(' - ')) {
       const parts = rawTitle.split(' - ', 2);
       title = parts[0].trim();
       author = parts[1].replace(/\s+sur\s+Apple\s+Music$/i, '').replace(/\s+on\s+Apple\s+Music$/i, '').trim();
     }
     
-    // Dernier recours: extraire depuis les meta tags music:
     if (!title || !author) {
       const musicTitle = html.match(/<meta\s+name="apple:title"\s+content="([^"]+)"/i);
       const musicArtist = html.match(/<meta\s+property="music:musician"\s+content="([^"]+)"/i)
@@ -239,52 +234,133 @@ async function fetchAppleMusicOG(url, reqId) {
   }
 }
 
-async function fetchAppleMusicPlaylistTracks(url, reqId) {
-  logInfo(reqId, 'playlist:AM:start', { url });
+async function fetchAppleMusicAlbumTracks(url, reqId) {
+  logInfo(reqId, 'album:AM:start', { url });
   try {
     const res = await fetch(url, { 
-      headers: { 'User-Agent': 'Mozilla/5.0' },
+      headers: { 
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8'
+      },
       redirect: 'follow'
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const html = await res.text();
     
-    // Extraire le nom de la playlist
     const titleMatch = html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i)
       || html.match(/<title>([^<]+)<\/title>/i);
     
-    let playlistName = 'Playlist Apple Music';
-    if (titleMatch) {
-      playlistName = titleMatch[1]
-        .replace(/\s+sur\s+Apple\s+Music$/i, '')
-        .replace(/\s+on\s+Apple\s+Music$/i, '')
-        .trim();
-    }
+    let albumName = 'Album Apple Music';
+    let artistName = '';
     
-    // Extraire les tracks depuis le JSON-LD ou le HTML
-    const tracks = [];
-    const jsonLdMatch = html.match(/<script\s+type="application\/ld\+json">([^<]+)<\/script>/i);
-    if (jsonLdMatch) {
-      try {
-        const jsonLd = JSON.parse(jsonLdMatch[1]);
-        if (jsonLd.track && Array.isArray(jsonLd.track)) {
-          for (const track of jsonLd.track) {
-            tracks.push({
-              title: track.name || '',
-              author: track.byArtist?.name || ''
-            });
-          }
-        }
-      } catch (e) {
-        logWarn(reqId, 'playlist:AM:jsonParseFailed', e.message);
+    if (titleMatch) {
+      const rawTitle = titleMatch[1].trim();
+      const match = rawTitle.match(/^(.+?)\s+par\s+(.+?)\s+sur\s+Apple\s+Music$/i)
+        || rawTitle.match(/^(.+?)\s+by\s+(.+?)\s+on\s+Apple\s+Music$/i);
+      if (match) {
+        albumName = match[1].trim();
+        artistName = match[2].trim();
       }
     }
     
-    logInfo(reqId, 'playlist:AM:found', { name: playlistName, count: tracks.length });
-    return { name: playlistName, tracks };
+    const tracks = [];
+    
+    // Méthode 1: JSON-LD
+    const scriptMatches = html.matchAll(/<script[^>]*type="application\/ld\+json"[^>]*>([^<]+)<\/script>/gi);
+    for (const scriptMatch of scriptMatches) {
+      try {
+        const jsonData = JSON.parse(scriptMatch[1]);
+        
+        if (jsonData['@type'] === 'MusicAlbum' && jsonData.track) {
+          const trackList = Array.isArray(jsonData.track) ? jsonData.track : [jsonData.track];
+          for (const track of trackList) {
+            if (track.name) {
+              tracks.push({
+                title: track.name,
+                author: track.byArtist?.name || artistName || 'Unknown Artist'
+              });
+            }
+          }
+        }
+        
+        if (Array.isArray(jsonData) && jsonData.length > 0) {
+          for (const item of jsonData) {
+            if (item['@type'] === 'MusicRecording' && item.name) {
+              tracks.push({
+                title: item.name,
+                author: item.byArtist?.name || artistName || 'Unknown Artist'
+              });
+            }
+          }
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+    
+    // Méthode 2: Patterns HTML
+    if (tracks.length === 0) {
+      const songPatterns = [
+        /<div[^>]+class="[^"]*song-name[^"]*"[^>]*>([^<]+)<\/div>/gi,
+        /<button[^>]+data-testid="song-name"[^>]*>([^<]+)<\/button>/gi,
+        /<a[^>]+class="[^"]*track-title[^"]*"[^>]*>([^<]+)<\/a>/gi
+      ];
+      
+      for (const pattern of songPatterns) {
+        const matches = html.matchAll(pattern);
+        for (const match of matches) {
+          const title = match[1].trim();
+          if (title && title.length > 0 && !title.includes('Apple Music')) {
+            tracks.push({
+              title: title,
+              author: artistName || 'Unknown Artist'
+            });
+          }
+        }
+        if (tracks.length > 0) break;
+      }
+    }
+    
+    // Méthode 3: JavaScript state
+    if (tracks.length === 0) {
+      const initDataMatch = html.match(/window\.__INITIAL_STATE__\s*=\s*({.+?});/s)
+        || html.match(/window\.INIT_DATA\s*=\s*({.+?});/s);
+      
+      if (initDataMatch) {
+        try {
+          const initData = JSON.parse(initDataMatch[1]);
+          const findTracks = (obj) => {
+            if (!obj || typeof obj !== 'object') return;
+            
+            if (obj.tracks && Array.isArray(obj.tracks)) {
+              for (const track of obj.tracks) {
+                if (track.attributes?.name) {
+                  tracks.push({
+                    title: track.attributes.name,
+                    author: track.attributes.artistName || artistName || 'Unknown Artist'
+                  });
+                }
+              }
+            }
+            
+            for (const key in obj) {
+              findTracks(obj[key]);
+            }
+          };
+          
+          findTracks(initData);
+        } catch (e) {
+          logWarn(reqId, 'album:AM:initDataParseFailed', e.message);
+        }
+      }
+    }
+    
+    logInfo(reqId, 'album:AM:found', { name: albumName, artist: artistName, count: tracks.length });
+    return { name: `${albumName}${artistName ? ' - ' + artistName : ''}`, tracks };
   }
   catch (err) {
-    logWarn(reqId, 'playlist:AM:error', err?.message || String(err));
+    logWarn(reqId, 'album:AM:error', err?.message || String(err));
     return null;
   }
 }
@@ -522,7 +598,7 @@ module.exports = {
     // Apple Music Playlist
     if (isUrl(query) && isAppleMusicPlaylistUrl(query)) {
       logInfo(reqId, 'playlist:AM', { query });
-      const playlistData = await fetchAppleMusicPlaylistTracks(query, reqId);
+      const playlistData = await fetchAppleMusicAlbumTracks(query, reqId);
       
       if (!playlistData || playlistData.tracks.length === 0) {
         return interaction.editReply({
@@ -537,7 +613,7 @@ module.exports = {
           player.queue.add(scTrack);
           added++;
         }
-        if (added >= 50) break; // Limite à 50 tracks
+        if (added >= 50) break;
       }
 
       if (!player.playing) player.play();
@@ -551,7 +627,7 @@ module.exports = {
     // Apple Music Album
     if (isUrl(query) && isAppleMusicAlbumUrl(query)) {
       logInfo(reqId, 'album:AM', { query });
-      const albumData = await fetchAppleMusicPlaylistTracks(query, reqId);
+      const albumData = await fetchAppleMusicAlbumTracks(query, reqId);
       
       if (!albumData || albumData.tracks.length === 0) {
         return interaction.editReply({
