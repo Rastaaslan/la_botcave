@@ -16,11 +16,11 @@ function isUrl(s) {
   try { new URL(s); return true; } catch { return false; }
 }
 
-// Utils de normalisation et scoring pour améliorer le "rebond" vers SoundCloud
+// Normalisation & scoring pour le "rebond" SoundCloud
 function normalize(s) {
   return (s || '')
     .toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // retirer les accents
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .replace(/[-–—_]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -28,15 +28,30 @@ function normalize(s) {
 
 function stripTitleNoise(title) {
   let t = title || '';
-  t = t.replace(/(\(|\[|\{).+?(\)|\]|\})/g, ' '); // contenu entre (), [], {}
+  t = t.replace(/(\(|\[|\{).+?(\)|\]|\})/g, ' ');
   t = t.replace(/\bofficial\b|\bvideo\b|\blyrics?\b|\baudio\b|\bmv\b|\bhd\b|\buhd\b|\b4k\b|\bremaster(ed)?\b/ig, ' ');
   t = t.replace(/\bfeat\.?\b|\bft\.?\b|\bwith\b/ig, ' ');
-  t = t.split('|')[0]; // enlever après un "|"
+  t = t.split('|')[0];
   return normalize(t);
 }
 
 function stripArtistNoise(artist) {
   return normalize((artist || '').replace(/\s*-\s*topic$/i, ''));
+}
+
+function deurlToText(s) {
+  // Convertit une URL en texte approximatif, en retirant protocole/domaines/params
+  try {
+    const u = new URL(s);
+    const hostWords = (u.hostname || '').replace(/^www\./, '').split('.').join(' ');
+    const pathWords = (u.pathname || '').replace(/[\/_]+/g, ' ');
+    const searchWords = (u.search || '').replace(/[?&=]+/g, ' ');
+    const raw = `${hostWords} ${pathWords} ${searchWords}`;
+    // Retirer vocables techniques YouTube
+    return normalize(raw.replace(/\b(youtube|youtu|watch|v|list|feature|si|index|t)\b/gi, ''));
+  } catch {
+    return normalize(s.replace(/https?:\/\/\S+/g, ' '));
+  }
 }
 
 function jaccard(a, b) {
@@ -47,10 +62,11 @@ function jaccard(a, b) {
   return inter / union;
 }
 
+// IMPORTANT: ne pas préfixer query par "scsearch:" si on met source: 'soundcloud'
 async function scSearch(client, requester, q, limit = 10) {
-  // IMPORTANT: pas de "source" ici, juste un identifiant scsearch:texte
   const res = await client.manager.search({
-    query: `scsearch:${q}`,
+    query: q,                // texte pur
+    source: 'soundcloud',    // laisse la lib construire "scsearch:q"
     requester
   });
   return (res?.tracks || []).slice(0, limit);
@@ -58,7 +74,7 @@ async function scSearch(client, requester, q, limit = 10) {
 
 async function getMetaFromUrl(client, requester, url) {
   try {
-    // URL brute: laisser Lavalink détecter la source pour extraire les métadonnées
+    // URL brute: laisser Lavalink détecter la source pour extraire titre/auteur
     const res = await client.manager.search({ query: url, requester });
     return res?.tracks?.[0] || null;
   } catch { return null; }
@@ -67,7 +83,7 @@ async function getMetaFromUrl(client, requester, url) {
 async function resolveToSoundCloudTrack(client, requester, urlOrQuery) {
   let candidates = [];
 
-  // 1) URL YouTube/Spotify de piste -> extraire méta puis construire des requêtes SC
+  // 1) URL YouTube/Spotify de piste -> extraire méta
   if (/youtu\.be|youtube\.com/i.test(urlOrQuery) || /open\.spotify\.com\/track|spotify:track:/i.test(urlOrQuery)) {
     const src = await getMetaFromUrl(client, requester, urlOrQuery);
     if (src) {
@@ -83,13 +99,14 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery) {
     }
   }
 
-  // 2) Sinon, utiliser la chaîne telle quelle (nettoyée)
+  // 2) Fallback: chaîne transformée si URL, sinon titre nettoyé
   if (candidates.length === 0) {
-    const cleaned = stripTitleNoise(urlOrQuery);
-    candidates.push(cleaned || urlOrQuery);
+    const cleaned = isUrl(urlOrQuery) ? deurlToText(urlOrQuery) : stripTitleNoise(urlOrQuery);
+    if (cleaned) candidates.push(cleaned);
   }
+  if (candidates.length === 0) return null;
 
-  // 3) Chercher plusieurs variantes et scorer les top résultats
+  // 3) Chercher plusieurs variantes et scorer
   let best = null;
   let bestScore = 0;
   for (const q of candidates) {
@@ -103,10 +120,10 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery) {
         bestScore = score;
       }
     }
-    if (best && bestScore >= 0.35) break; // seuil raisonnable
+    if (best && bestScore >= 0.35) break;
   }
 
-  // 4) Fallback: premier résultat de la dernière recherche
+  // 4) Fallback final
   if (!best) {
     const fallback = await scSearch(client, requester, candidates.at(-1), 1);
     best = fallback[0] || null;
