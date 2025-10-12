@@ -1,6 +1,7 @@
 // slash/play.js
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { buildEmbed } = require('../utils/embedHelper');
+const fetch = (...args) => import('node-fetch').then(({default: f}) => f(...args));
 
 /* =========================
    Constantes & Détection
@@ -16,6 +17,8 @@ const SP_PLAYLIST_OR_ALBUM = /(?:open\.spotify\.com\/(?:playlist|album)\/|spotif
 
 function isUrl(s) { try { new URL(s); return true; } catch { return false; } }
 function isYouTubeUri(uri) { return typeof uri === 'string' && /youtu\.be|youtube\.com/i.test(uri); }
+function isYouTubeUrl(s) { return typeof s === 'string' && /youtu\.be|youtube\.com/i.test(s); }
+function isSpotifyTrackUrl(s) { return typeof s === 'string' && /open\.spotify\.com\/track|spotify:track:/i.test(s); }
 
 /* =========================
    Logging helpers
@@ -60,14 +63,11 @@ function coreTokens(s) {
   return [...tokenSet(s)].filter(w => w.length > 2);
 }
 function dynamicBoostGeneric(title, author, wantTokens) {
-  // Boosts uniquement dérivés de la requête courante (aucune valeur en dur)
   let b = 0;
   const T = tokenSet(title);
   const A = tokenSet(author);
-  // Bonus léger si au moins 2 tokens de la requête apparaissent dans le titre
   const overlapTitle = wantTokens.filter(t => T.has(t)).length;
   if (overlapTitle >= 2) b += 0.12;
-  // Bonus léger si 1 token apparaît dans l’auteur
   const overlapAuthor = wantTokens.filter(t => A.has(t)).length;
   if (overlapAuthor >= 1) b += 0.10;
   return b;
@@ -85,25 +85,53 @@ async function scSearch(client, requester, q, limit, reqId) {
   });
   const n = (res?.tracks || []).length;
   console.log(SC_PREFIX, reqId, 'results', n);
-  // Filtre anti-YT par précaution
   return (res?.tracks || []).slice(0, limit).filter(t => !isYouTubeUri(t?.uri));
 }
 
 /* =========================
-   Méta depuis URL (tolère l’échec YT)
+   Méta via Lavalink OU oEmbed
    ========================= */
 async function getMetaFromUrl(client, requester, url, reqId) {
+  // 1) Tentative Lavalink (peut échouer si YT désactivé)
   try {
     logInfo(reqId, 'meta:url', url);
     const res = await client.manager.search({ query: url, requester });
     const t = res?.tracks?.[0];
-    if (t) logInfo(reqId, 'meta:ok', { title: t.title, author: t.author });
-    else   logWarn(reqId, 'meta:none');
-    return t || null;
+    if (t) {
+      logInfo(reqId, 'meta:lavalink:ok', { title: t.title, author: t.author });
+      return { title: t.title || '', author: t.author || '' };
+    }
+    logWarn(reqId, 'meta:lavalink:none');
   } catch (e) {
-    logWarn(reqId, 'meta:error', e?.message || String(e));
-    return null;
+    logWarn(reqId, 'meta:lavalink:error', e?.message || String(e));
   }
+
+  // 2) Fallback oEmbed YouTube si URL YT
+  if (isYouTubeUrl(url)) {
+    try {
+      const o = new URL('https://www.youtube.com/oembed');
+      o.searchParams.set('url', url);
+      o.searchParams.set('format', 'json');
+      const resp = await fetch(o.toString(), { headers: { 'Accept': 'application/json' } });
+      if (resp.ok) {
+        const data = await resp.json();
+        const meta = {
+          title: data?.title ? String(data.title) : '',
+          author: data?.author_name ? String(data.author_name) : ''
+        };
+        logInfo(reqId, 'meta:oembed:ok', meta);
+        if (meta.title || meta.author) return meta;
+      } else {
+        logWarn(reqId, 'meta:oembed:http', { status: resp.status });
+      }
+    } catch (e) {
+      logWarn(reqId, 'meta:oembed:error', e?.message || String(e));
+    }
+  }
+
+  // 3) Pas de méta exploitable
+  logWarn(reqId, 'meta:none:all');
+  return null;
 }
 
 /* =========================
@@ -136,12 +164,12 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery, reqId) {
   let best = null;
   let bestScore = 0;
 
-  // 1) Essai méta si URL YT/SP de piste
-  if (/youtu\.be|youtube\.com/i.test(urlOrQuery) || /open\.spotify\.com\/track|spotify:track:/i.test(urlOrQuery)) {
-    const src = await getMetaFromUrl(client, requester, urlOrQuery, reqId);
-    if (src) {
-      const artist = stripArtistNoise(src.author);
-      const title = stripTitleNoise(src.title);
+  // 1) Méta (Lavalink ou oEmbed YouTube)
+  if (isYouTubeUrl(urlOrQuery) || isSpotifyTrackUrl(urlOrQuery)) {
+    const meta = await getMetaFromUrl(client, requester, urlOrQuery, reqId);
+    if (meta) {
+      const artist = stripArtistNoise(meta.author);
+      const title  = stripTitleNoise(meta.title);
       const combos = [
         `${artist} ${title}`,
         `${title} ${artist}`,
@@ -164,7 +192,7 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery, reqId) {
     return null;
   }
 
-  // 3) Variantes initiales (aucun “guided” hardcodé)
+  // 3) Variantes initiales (sans guides en dur)
   for (const q of candidates) {
     const wantTokens = coreTokens(q);
     const tracks = await scSearch(client, requester, q, 10, reqId);
@@ -174,13 +202,13 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery, reqId) {
       const author = t.author || '';
       let score = 0.6 * jaccard(title, q) + 0.4 * jaccard(author, q);
       score += dynamicBoostGeneric(title, author, wantTokens);
-      if (/mix|set|live|full album/i.test(title)) score -= 0.08; // pénalité légère et générique
+      if (/mix|set|live|full album/i.test(title)) score -= 0.08; // pénalité légère générique
       if (score > bestScore) { best = t; bestScore = score; }
       if (i < 3) console.log(SC_PREFIX, reqId, 'score', { q, title, author, score: Number(score.toFixed(3)) });
       i++;
     }
     logInfo(reqId, 'candidateDone', { q, bestScore: Number(bestScore.toFixed(3)) });
-    if (best && bestScore >= 0.45) break; // seuil générique
+    if (best && bestScore >= 0.45) break;
   }
 
   if (!best) {
@@ -299,7 +327,6 @@ module.exports = {
       });
     }
 
-    // Toujours lire la query fraîche
     const query = interaction.options.getString('query', true);
     logInfo(reqId, 'input', { query });
 
@@ -313,7 +340,7 @@ module.exports = {
       return;
     }
 
-    // Refus des playlists/albums YT & Spotify
+    // Refus playlists/albums YT & Spotify
     if (isUrl(query) && (YT_PLAYLIST.test(query) || SP_PLAYLIST_OR_ALBUM.test(query))) {
       logWarn(reqId, 'reject:playlist', { query });
       return interaction.editReply({
@@ -385,7 +412,7 @@ module.exports = {
       });
     }
 
-    // Lien YT/SP piste OU recherche texte → rebond SoundCloud (générique)
+    // Lien YT/SP piste OU recherche texte → rebond SoundCloud (générique + oEmbed)
     const scTrack = await resolveToSoundCloudTrack(client, interaction.user, query, reqId);
     if (!scTrack) {
       logWarn(reqId, 'resolve:none', { query });
