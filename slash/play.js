@@ -17,7 +17,7 @@ const SP_PLAYLIST_OR_ALBUM = /(?:open\.spotify\.com\/(?:playlist|album)\/|spotif
 
 function isUrl(s) { try { new URL(s); return true; } catch { return false; } }
 function isYouTubeUri(uri) { return typeof uri === 'string' && /youtu\.be|youtube\.com/i.test(uri); }
-function isYouTubeUrl(s) { return typeof s === 'string' && /youtu\.be|youtube\.com/i.test(s); }
+function isYouTubeUrl(s)  { return typeof s === 'string' && /youtu\.be|youtube\.com/i.test(s); }
 function isSpotifyTrackUrl(s) { return typeof s === 'string' && /open\.spotify\.com\/track|spotify:track:/i.test(s); }
 
 /* =========================
@@ -79,8 +79,8 @@ function dynamicBoostGeneric(title, author, wantTokens) {
 async function scSearch(client, requester, q, limit, reqId) {
   console.log(SC_PREFIX, reqId, 'search', JSON.stringify(q), 'limit=', limit);
   const res = await client.manager.search({
-    query: q,              // texte pur
-    source: 'soundcloud',  // la lib formera scsearch:q
+    query: q,
+    source: 'soundcloud',
     requester
   });
   const n = (res?.tracks || []).length;
@@ -89,10 +89,62 @@ async function scSearch(client, requester, q, limit, reqId) {
 }
 
 /* =========================
-   Méta via Lavalink OU oEmbed
+   HTTP helpers & OG parsing
+   ========================= */
+async function fetchText(url, reqId) {
+  try {
+    const resp = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'text/html,application/xhtml+xml' }});
+    if (!resp.ok) {
+      logWarn(reqId, 'fetch:http', { url, status: resp.status });
+      return null;
+    }
+    return await resp.text();
+  } catch (e) {
+    logWarn(reqId, 'fetch:error', e?.message || String(e));
+    return null;
+  }
+}
+
+function extractOg(content) {
+  if (!content) return {};
+  const get = (prop) => {
+    const m = content.match(new RegExp(`<meta\\s+property=["']${prop}["']\\s+content=["']([^"']+)["']`, 'i'));
+    return m?.[1] || '';
+  };
+  const titleTag = (content.match(/<title>([^<]+)<\/title>/i)?.[1] || '').trim();
+  return {
+    ogTitle: get('og:title'),
+    ogDescription: get('og:description'),
+    titleTag
+  };
+}
+
+function normalizeSpotifyMeta(meta) {
+  const raw = meta.ogTitle || meta.titleTag || '';
+  let title = raw.replace(/\s*\|\s*Spotify\s*$/i, '');
+  let artist = '';
+  let m = title.match(/\s*-\s*song(?:\s+and\s+lyrics)?\s+by\s+(.+)$/i);
+  if (m) {
+    artist = m[1];
+    title = title.replace(/\s*-\s*song(?:\s+and\s+lyrics)?\s+by\s+.+$/i, '');
+  } else {
+    m = title.match(/\s*·\s*(?:single|album|ep)\s+by\s+(.+)$/i);
+    if (m) {
+      artist = m[1];
+      title = title.replace(/\s*·\s*(?:single|album|ep)\s+by\s+.+$/i, '');
+    }
+  }
+  return {
+    title: stripTitleNoise(title),
+    artist: stripArtistNoise(artist)
+  };
+}
+
+/* =========================
+   Méta via Lavalink, oEmbed YT, OG Spotify
    ========================= */
 async function getMetaFromUrl(client, requester, url, reqId) {
-  // 1) Tentative Lavalink (peut échouer si YT désactivé)
+  // 1) Lavalink (peut fournir méta pour YT/SP selon plugins)
   try {
     logInfo(reqId, 'meta:url', url);
     const res = await client.manager.search({ query: url, requester });
@@ -106,7 +158,7 @@ async function getMetaFromUrl(client, requester, url, reqId) {
     logWarn(reqId, 'meta:lavalink:error', e?.message || String(e));
   }
 
-  // 2) Fallback oEmbed YouTube si URL YT
+  // 2) oEmbed YouTube
   if (isYouTubeUrl(url)) {
     try {
       const o = new URL('https://www.youtube.com/oembed');
@@ -129,7 +181,21 @@ async function getMetaFromUrl(client, requester, url, reqId) {
     }
   }
 
-  // 3) Pas de méta exploitable
+  // 3) OG Spotify (page publique)
+  if (isSpotifyTrackUrl(url)) {
+    const html = await fetchText(url, reqId);
+    if (html) {
+      const og = extractOg(html);
+      const parsed = normalizeSpotifyMeta(og);
+      if (parsed.title || parsed.artist) {
+        logInfo(reqId, 'meta:spotifyOG:ok', parsed);
+        return { title: parsed.title, author: parsed.artist };
+      }
+      logWarn(reqId, 'meta:spotifyOG:empty', og);
+    }
+  }
+
+  // 4) Pas de méta exploitable
   logWarn(reqId, 'meta:none:all');
   return null;
 }
@@ -155,7 +221,7 @@ function deurlToText(s, reqId) {
 }
 
 /* =========================
-   Rebond YT/SP -> SoundCloud (générique)
+   Rebond URL piste -> SoundCloud (générique)
    ========================= */
 async function resolveToSoundCloudTrack(client, requester, urlOrQuery, reqId) {
   logInfo(reqId, 'resolve:start', { input: urlOrQuery });
@@ -164,7 +230,7 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery, reqId) {
   let best = null;
   let bestScore = 0;
 
-  // 1) Méta (Lavalink ou oEmbed YouTube)
+  // 1) Méta (Lavalink/oEmbed/OG)
   if (isYouTubeUrl(urlOrQuery) || isSpotifyTrackUrl(urlOrQuery)) {
     const meta = await getMetaFromUrl(client, requester, urlOrQuery, reqId);
     if (meta) {
@@ -192,7 +258,7 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery, reqId) {
     return null;
   }
 
-  // 3) Variantes initiales (sans guides en dur)
+  // 3) Variantes initiales (aucun guide en dur)
   for (const q of candidates) {
     const wantTokens = coreTokens(q);
     const tracks = await scSearch(client, requester, q, 10, reqId);
@@ -202,7 +268,7 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery, reqId) {
       const author = t.author || '';
       let score = 0.6 * jaccard(title, q) + 0.4 * jaccard(author, q);
       score += dynamicBoostGeneric(title, author, wantTokens);
-      if (/mix|set|live|full album/i.test(title)) score -= 0.08; // pénalité légère générique
+      if (/mix|set|live|full album/i.test(title)) score -= 0.08;
       if (score > bestScore) { best = t; bestScore = score; }
       if (i < 3) console.log(SC_PREFIX, reqId, 'score', { q, title, author, score: Number(score.toFixed(3)) });
       i++;
@@ -412,7 +478,7 @@ module.exports = {
       });
     }
 
-    // Lien YT/SP piste OU recherche texte → rebond SoundCloud (générique + oEmbed)
+    // Lien YT/SP piste OU recherche texte → rebond SoundCloud (Lavalink/oEmbed/OG)
     const scTrack = await resolveToSoundCloudTrack(client, interaction.user, query, reqId);
     if (!scTrack) {
       logWarn(reqId, 'resolve:none', { query });
