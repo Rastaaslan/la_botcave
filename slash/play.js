@@ -239,9 +239,12 @@ async function fetchAppleMusicAlbumTracks(url, reqId) {
   try {
     const res = await fetch(url, { 
       headers: { 
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
       },
       redirect: 'follow'
     });
@@ -266,94 +269,123 @@ async function fetchAppleMusicAlbumTracks(url, reqId) {
     
     const tracks = [];
     
-    // Méthode 1: JSON-LD
-    const scriptMatches = html.matchAll(/<script[^>]*type="application\/ld\+json"[^>]*>([^<]+)<\/script>/gi);
-    for (const scriptMatch of scriptMatches) {
-      try {
-        const jsonData = JSON.parse(scriptMatch[1]);
-        
-        if (jsonData['@type'] === 'MusicAlbum' && jsonData.track) {
-          const trackList = Array.isArray(jsonData.track) ? jsonData.track : [jsonData.track];
-          for (const track of trackList) {
-            if (track.name) {
-              tracks.push({
-                title: track.name,
-                author: track.byArtist?.name || artistName || 'Unknown Artist'
-              });
-            }
-          }
+    // Méthode principale: Chercher le JSON serialisé dans window.INITIAL_DATA, serializedData, etc.
+    const dataPatterns = [
+      /window\s*\[\s*["']INITIAL_DATA["']\s*\]\s*=\s*({[\s\S]*?});/,
+      /window\.__INITIAL_STATE__\s*=\s*({[\s\S]*?});/,
+      /serializedData\s*=\s*({[\s\S]*?});/,
+      /<script\s+id="serialized-server-data"[^>]*>\s*({[\s\S]*?})\s*<\/script>/,
+      /<div\s+id="shoebox-ember-data-store"[^>]*>\s*({[\s\S]*?})\s*<\/div>/
+    ];
+    
+    let parsedData = null;
+    for (const pattern of dataPatterns) {
+      const match = html.match(pattern);
+      if (match) {
+        try {
+          parsedData = JSON.parse(match[1]);
+          logInfo(reqId, 'album:AM:dataFound', { pattern: pattern.source.substring(0, 50) });
+          break;
+        } catch (e) {
+          continue;
         }
-        
-        if (Array.isArray(jsonData) && jsonData.length > 0) {
-          for (const item of jsonData) {
-            if (item['@type'] === 'MusicRecording' && item.name) {
-              tracks.push({
-                title: item.name,
-                author: item.byArtist?.name || artistName || 'Unknown Artist'
-              });
-            }
-          }
-        }
-      } catch (e) {
-        continue;
       }
     }
     
-    // Méthode 2: Patterns HTML
-    if (tracks.length === 0) {
-      const songPatterns = [
-        /<div[^>]+class="[^"]*song-name[^"]*"[^>]*>([^<]+)<\/div>/gi,
-        /<button[^>]+data-testid="song-name"[^>]*>([^<]+)<\/button>/gi,
-        /<a[^>]+class="[^"]*track-title[^"]*"[^>]*>([^<]+)<\/a>/gi
-      ];
-      
-      for (const pattern of songPatterns) {
-        const matches = html.matchAll(pattern);
-        for (const match of matches) {
-          const title = match[1].trim();
-          if (title && title.length > 0 && !title.includes('Apple Music')) {
+    // Si on a trouvé des données, les parcourir
+    if (parsedData) {
+      const extractTracksRecursive = (obj, depth = 0) => {
+        if (depth > 10 || !obj || typeof obj !== 'object') return;
+        
+        // Chercher les patterns de tracks
+        if (obj.type === 'songs' || obj.type === 'song') {
+          if (obj.attributes?.name) {
             tracks.push({
-              title: title,
-              author: artistName || 'Unknown Artist'
+              title: obj.attributes.name,
+              author: obj.attributes.artistName || artistName || 'Unknown Artist'
             });
           }
         }
-        if (tracks.length > 0) break;
-      }
+        
+        // Chercher dans relationships.tracks
+        if (obj.relationships?.tracks?.data) {
+          const trackRefs = Array.isArray(obj.relationships.tracks.data) 
+            ? obj.relationships.tracks.data 
+            : [obj.relationships.tracks.data];
+          for (const ref of trackRefs) {
+            if (ref.id) {
+              logInfo(reqId, 'album:AM:trackRefFound', { id: ref.id });
+            }
+          }
+        }
+        
+        // Parcourir récursivement
+        for (const key in obj) {
+          if (key === 'included' || key === 'data' || key === 'songs' || key === 'tracks') {
+            if (Array.isArray(obj[key])) {
+              for (const item of obj[key]) {
+                extractTracksRecursive(item, depth + 1);
+              }
+            } else {
+              extractTracksRecursive(obj[key], depth + 1);
+            }
+          }
+        }
+      };
+      
+      extractTracksRecursive(parsedData);
     }
     
-    // Méthode 3: JavaScript state
+    // Fallback: Utiliser l'API officielle Apple Music (nécessite un token mais peut fonctionner avec un token public)
     if (tracks.length === 0) {
-      const initDataMatch = html.match(/window\.__INITIAL_STATE__\s*=\s*({.+?});/s)
-        || html.match(/window\.INIT_DATA\s*=\s*({.+?});/s);
+      logWarn(reqId, 'album:AM:noTracksInHTML', { tryingAPI: true });
       
-      if (initDataMatch) {
+      // Extraire l'ID de l'album depuis l'URL
+      const albumIdMatch = url.match(/\/album\/[^\/]+\/(\d+)/);
+      if (albumIdMatch) {
+        const albumId = albumIdMatch[1];
+        const region = url.match(/music\.apple\.com\/([a-z]{2})\//)?.[1] || 'us';
+        
+        // Essayer de récupérer depuis l'API publique (peut ne pas fonctionner sans token)
         try {
-          const initData = JSON.parse(initDataMatch[1]);
-          const findTracks = (obj) => {
-            if (!obj || typeof obj !== 'object') return;
-            
-            if (obj.tracks && Array.isArray(obj.tracks)) {
-              for (const track of obj.tracks) {
+          const apiUrl = `https://amp-api.music.apple.com/v1/catalog/${region}/albums/${albumId}`;
+          logInfo(reqId, 'album:AM:tryingAPI', { apiUrl });
+          
+          const apiRes = await fetch(apiUrl, {
+            headers: {
+              'Origin': 'https://music.apple.com',
+              'Referer': url,
+              'User-Agent': 'Mozilla/5.0'
+            }
+          });
+          
+          if (apiRes.ok) {
+            const apiData = await apiRes.json();
+            if (apiData.data?.[0]?.relationships?.tracks?.data) {
+              for (const track of apiData.data[0].relationships.tracks.data) {
                 if (track.attributes?.name) {
                   tracks.push({
                     title: track.attributes.name,
-                    author: track.attributes.artistName || artistName || 'Unknown Artist'
+                    author: track.attributes.artistName || artistName
                   });
                 }
               }
             }
-            
-            for (const key in obj) {
-              findTracks(obj[key]);
-            }
-          };
-          
-          findTracks(initData);
+          }
         } catch (e) {
-          logWarn(reqId, 'album:AM:initDataParseFailed', e.message);
+          logWarn(reqId, 'album:AM:apiFailed', e.message);
         }
       }
+    }
+    
+    // Si toujours rien, créer une liste générique basée sur le nom de l'album
+    if (tracks.length === 0 && artistName) {
+      logWarn(reqId, 'album:AM:fallbackSearch', { album: albumName, artist: artistName });
+      // Retourner au moins une recherche générique
+      tracks.push({
+        title: albumName,
+        author: artistName
+      });
     }
     
     logInfo(reqId, 'album:AM:found', { name: albumName, artist: artistName, count: tracks.length });
@@ -364,6 +396,7 @@ async function fetchAppleMusicAlbumTracks(url, reqId) {
     return null;
   }
 }
+
 
 async function getMetaOnce(client, requester, url, reqId) {
   try {
