@@ -17,8 +17,11 @@ const SP_PLAYLIST_OR_ALBUM = /(?:open\.spotify\.com\/(?:playlist|album)\/|spotif
 function isUrl(s) { try { new URL(s); return true; } catch { return false; } }
 function isYouTubeUri(uri) { return typeof uri === 'string' && /youtu\.be|youtube\.com/i.test(uri); }
 function isYouTubeUrl(s)  { return typeof s === 'string' && /youtu\.be|youtube\.com/i.test(s); }
-function isSpotifyTrackUrl(s) { return typeof s === 'string' && /open\.spotify\.com\/track|spotify:track:/i.test(s); }
-
+function isSpotifyTrackUrl(s) {
+  if (typeof s !== 'string') return false;
+  // couvre open.spotify.com/track/ID et open.spotify.com/{locale}/track/ID
+  return /https?:\/\/open\.spotify\.com\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?track\/[A-Za-z0-9]+/i.test(s) || /^spotify:track:[A-Za-z0-9]+$/i.test(s);
+}
 function logInfo(reqId, tag, payload)  { console.log(LOG_PREFIX, reqId, tag, payload || ''); }
 function logWarn(reqId, tag, payload)  { console.warn(LOG_PREFIX, reqId, tag, payload || ''); }
 
