@@ -66,10 +66,9 @@ function jaccard(a, b) {
    Recherches SoundCloud
    ========================= */
 async function scSearch(client, requester, q, limit = 10) {
-  // IMPORTANT: query texte + source: 'soundcloud' (pas de "scsearch:" + source)
   const res = await client.manager.search({
-    query: q,
-    source: 'soundcloud',
+    query: q,              // texte pur
+    source: 'soundcloud',  // la lib formera scsearch:q
     requester
   });
   return (res?.tracks || []).slice(0, limit);
@@ -83,7 +82,7 @@ async function getMetaFromUrl(client, requester, url) {
     const res = await client.manager.search({ query: url, requester });
     return res?.tracks?.[0] || null;
   } catch {
-    // Ne jamais propager les erreurs YT: on retombe sur une recherche texte
+    // Ne jamais faire échouer le flux si YouTube casse
     return null;
   }
 }
@@ -94,7 +93,7 @@ async function getMetaFromUrl(client, requester, url) {
 async function resolveToSoundCloudTrack(client, requester, urlOrQuery) {
   let candidates = [];
 
-  // 1) URL YouTube/Spotify de piste -> extraire méta (peut échouer)
+  // 1) URL YouTube/Spotify de piste -> tentative d'extraction méta
   if (/youtu\.be|youtube\.com/i.test(urlOrQuery) || /open\.spotify\.com\/track|spotify:track:/i.test(urlOrQuery)) {
     const src = await getMetaFromUrl(client, requester, urlOrQuery);
     if (src) {
@@ -117,7 +116,7 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery) {
   }
   if (candidates.length === 0) return null;
 
-  // 3) Chercher plusieurs variantes et choisir la meilleure par scoring
+  // 3) Chercher plusieurs variantes et scorer
   let best = null;
   let bestScore = 0;
   for (const q of candidates) {
@@ -126,7 +125,7 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery) {
       const score = 0.6 * jaccard(t.title || '', q) + 0.4 * jaccard(t.author || '', q);
       if (score > bestScore) { best = t; bestScore = score; }
     }
-    if (best && bestScore >= 0.35) break; // seuil raisonnable
+    if (best && bestScore >= 0.35) break;
   }
 
   // 4) Fallback final
@@ -152,6 +151,63 @@ async function addInBatches(player, tracks, batchSize = 25) {
 }
 
 /* =========================
+   Garde-fou création/connexion
+   ========================= */
+async function ensurePlayer(interaction, client, gid, vc) {
+  // Node prêt ?
+  if (!client.manager || !client.manager.nodes || client.manager.nodes.size === 0) {
+    await interaction.editReply({
+      embeds: [buildEmbed(gid, {
+        type: 'error',
+        title: 'Serveur audio indisponible',
+        description: 'Le serveur musical n’est pas connecté. Réessaie plus tard.'
+      })]
+    });
+    throw new Error('No Lavalink nodes connected');
+  }
+
+  let player = client.manager.players.get(gid);
+
+  if (!player) {
+    player = client.manager.createPlayer({
+      guildId: gid,
+      voiceChannelId: vc.id,
+      textChannelId: interaction.channel.id,
+      autoPlay: true,
+      volume: 35
+    });
+    if (!player) {
+      await interaction.editReply({
+        embeds: [buildEmbed(gid, {
+          type: 'error',
+          title: 'Création du lecteur impossible',
+          description: 'Impossible d’initialiser le lecteur audio.'
+        })]
+      });
+      throw new Error('createPlayer returned undefined');
+    }
+  }
+
+  if (!player.connected) {
+    try {
+      await player.connect({ setDeaf: true, setMute: false });
+      await new Promise(r => setTimeout(r, 400));
+    } catch (e) {
+      await interaction.editReply({
+        embeds: [buildEmbed(gid, {
+          type: 'error',
+          title: 'Connexion vocale échouée',
+          description: 'Le bot ne peut pas rejoindre le salon vocal.'
+        })]
+      });
+      throw e;
+    }
+  }
+
+  return player;
+}
+
+/* =========================
    Commande slash
    ========================= */
 module.exports = {
@@ -169,36 +225,29 @@ module.exports = {
     if (!vc) {
       return interaction.reply({
         embeds: [buildEmbed(gid, { type: 'error', title: 'Salon vocal requis', description: 'Rejoindre un salon vocal.' })],
-        ephemeral: true
+        flags: 1 << 6 // ephemeral
       });
     }
     const perms = vc.permissionsFor(interaction.client.user);
     if (!perms?.has(PermissionFlagsBits.Connect) || !perms?.has(PermissionFlagsBits.Speak)) {
       return interaction.reply({
         embeds: [buildEmbed(gid, { type: 'error', title: 'Permissions manquantes', description: 'Connect et Speak requis.' })],
-        ephemeral: true
+        flags: 1 << 6
       });
     }
 
     const query = interaction.options.getString('query', true);
 
-    // Player
-    let player = client.manager.players.get(gid);
-    if (!player) {
-      player = client.manager.createPlayer({
-        guildId: gid,
-        voiceChannelId: vc.id,
-        textChannelId: interaction.channel.id,
-        autoPlay: true,
-        volume: 35
-      });
-    }
-    if (!player.connected) {
-      await player.connect({ setDeaf: true, setMute: false });
-      await new Promise(r => setTimeout(r, 400));
-    }
-
+    // On prépare une réponse publique (non éphémère)
     await interaction.deferReply();
+
+    // Player garanti
+    let player;
+    try {
+      player = await ensurePlayer(interaction, client, gid, vc);
+    } catch {
+      return; // message déjà envoyé
+    }
 
     // ❌ Refus des playlists/albums YT & Spotify
     if (isUrl(query) && (YT_PLAYLIST.test(query) || SP_PLAYLIST_OR_ALBUM.test(query))) {
@@ -219,6 +268,7 @@ module.exports = {
           embeds: [buildEmbed(gid, { type: 'error', title: 'Aucun résultat', description: 'Aucune piste trouvée pour ce set SoundCloud.' })]
         });
       }
+
       const isPlaylist =
         (typeof res.loadType === 'string' && res.loadType.toLowerCase().includes('playlist')) ||
         (res.tracks?.length > 1 && res.playlistInfo);
