@@ -12,9 +12,7 @@ const SP_PLAYLIST_OR_ALBUM = /(?:open\.spotify\.com\/(?:playlist|album)\/|spotif
 const YT_VIDEO = /(?:youtu\.be\/([A-Za-z0-9_-]{6,})|youtube\.com\/watch\?v=([A-Za-z0-9_-]{6,}))/i;
 const SP_TRACK = /(?:open\.spotify\.com\/track\/([A-Za-z0-9]+)|spotify:track:([A-Za-z0-9]+))/i;
 
-function isUrl(s) {
-  try { new URL(s); return true; } catch { return false; }
-}
+function isUrl(s) { try { new URL(s); return true; } catch { return false; } }
 
 // Normalisation & scoring pour le "rebond" SoundCloud
 function normalize(s) {
@@ -40,14 +38,12 @@ function stripArtistNoise(artist) {
 }
 
 function deurlToText(s) {
-  // Convertit une URL en texte approximatif, en retirant protocole/domaines/params
   try {
     const u = new URL(s);
     const hostWords = (u.hostname || '').replace(/^www\./, '').split('.').join(' ');
     const pathWords = (u.pathname || '').replace(/[\/_]+/g, ' ');
     const searchWords = (u.search || '').replace(/[?&=]+/g, ' ');
     const raw = `${hostWords} ${pathWords} ${searchWords}`;
-    // Retirer vocables techniques YouTube
     return normalize(raw.replace(/\b(youtube|youtu|watch|v|list|feature|si|index|t)\b/gi, ''));
   } catch {
     return normalize(s.replace(/https?:\/\/\S+/g, ' '));
@@ -62,11 +58,11 @@ function jaccard(a, b) {
   return inter / union;
 }
 
-// IMPORTANT: ne pas préfixer query par "scsearch:" si on met source: 'soundcloud'
+// IMPORTANT: query texte pur + source: 'soundcloud' (pas de "scsearch:" + source en même temps)
 async function scSearch(client, requester, q, limit = 10) {
   const res = await client.manager.search({
-    query: q,                // texte pur
-    source: 'soundcloud',    // laisse la lib construire "scsearch:q"
+    query: q,              // texte uniquement
+    source: 'soundcloud',  // la lib construira scsearch: en interne
     requester
   });
   return (res?.tracks || []).slice(0, limit);
@@ -74,7 +70,7 @@ async function scSearch(client, requester, q, limit = 10) {
 
 async function getMetaFromUrl(client, requester, url) {
   try {
-    // URL brute: laisser Lavalink détecter la source pour extraire titre/auteur
+    // URL brute pour extraire titre/auteur, sans l’ajouter à la file
     const res = await client.manager.search({ query: url, requester });
     return res?.tracks?.[0] || null;
   } catch { return null; }
@@ -99,7 +95,7 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery) {
     }
   }
 
-  // 2) Fallback: chaîne transformée si URL, sinon titre nettoyé
+  // 2) Fallback: si rien, transformer l’URL en texte ou nettoyer la recherche
   if (candidates.length === 0) {
     const cleaned = isUrl(urlOrQuery) ? deurlToText(urlOrQuery) : stripTitleNoise(urlOrQuery);
     if (cleaned) candidates.push(cleaned);
@@ -112,13 +108,8 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery) {
   for (const q of candidates) {
     const tracks = await scSearch(client, requester, q, 8);
     for (const t of tracks) {
-      const score =
-        0.6 * jaccard(t.title || '', q) +
-        0.4 * jaccard(t.author || '', q);
-      if (score > bestScore) {
-        best = t;
-        bestScore = score;
-      }
+      const score = 0.6 * jaccard(t.title || '', q) + 0.4 * jaccard(t.author || '', q);
+      if (score > bestScore) { best = t; bestScore = score; }
     }
     if (best && bestScore >= 0.35) break;
   }
@@ -145,7 +136,7 @@ async function addInBatches(player, tracks, batchSize = 25) {
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('play')
-    .setDescription('Lire une musique depuis une recherche ou une URL (priorité SoundCloud)')
+    .setDescription('Lire une musique depuis une recherche ou une URL (lecture SoundCloud transparente)')
     .addStringOption(o => o.setName('query').setDescription('Recherche ou URL').setRequired(true)),
 
   async execute(interaction, client) {
@@ -155,9 +146,7 @@ module.exports = {
 
     if (!vc) {
       return interaction.reply({
-        embeds: [buildEmbed(gid, {
-          type: 'error', title: 'Salon vocal requis', description: 'Rejoindre un salon vocal.'
-        })],
+        embeds: [buildEmbed(gid, { type: 'error', title: 'Salon vocal requis', description: 'Rejoindre un salon vocal.' })],
         ephemeral: true
       });
     }
@@ -165,9 +154,7 @@ module.exports = {
     const perms = vc.permissionsFor(interaction.client.user);
     if (!perms?.has(PermissionFlagsBits.Connect) || !perms?.has(PermissionFlagsBits.Speak)) {
       return interaction.reply({
-        embeds: [buildEmbed(gid, {
-          type: 'error', title: 'Permissions manquantes', description: 'Connect et Speak requis.'
-        })],
+        embeds: [buildEmbed(gid, { type: 'error', title: 'Permissions manquantes', description: 'Connect et Speak requis.' })],
         ephemeral: true
       });
     }
@@ -207,9 +194,7 @@ module.exports = {
     if (isUrl(query) && SC_SET.test(query)) {
       const res = await client.manager.search({ query, requester: interaction.user });
       if (!res?.tracks?.length) {
-        return interaction.editReply({ embeds: [buildEmbed(gid, {
-          type: 'error', title: 'Aucun résultat', description: 'Aucune piste trouvée pour ce set SoundCloud.'
-        })]});
+        return interaction.editReply({ embeds: [buildEmbed(gid, { type: 'error', title: 'Aucun résultat', description: 'Aucune piste trouvée pour ce set SoundCloud.' })]});
       }
 
       const isPlaylist =
@@ -230,38 +215,31 @@ module.exports = {
       })]});
     }
 
-    // 🎯 Rebond systématique vers SoundCloud
+    // 🎯 Entrées restantes:
+    // - URL SoundCloud piste: lecture directe
+    // - URL YouTube/Spotify piste: rebond → SC
+    // - Recherche texte: SC
     if (isUrl(query) && SC_TRACK.test(query)) {
-      // URL piste SoundCloud: direct
       const res = await client.manager.search({ query, requester: interaction.user });
       if (!res?.tracks?.length) {
-        return interaction.editReply({ embeds: [buildEmbed(gid, {
-          type: 'error', title: 'Introuvable', description: 'Piste SoundCloud non trouvée.'
-        })]});
+        return interaction.editReply({ embeds: [buildEmbed(gid, { type: 'error', title: 'Introuvable', description: 'Piste SoundCloud non trouvée.' })]});
       }
       const track = res.tracks[0];
       const wasPlaying = player.playing;
       player.queue.add(track);
       if (!wasPlaying) player.play();
-      return interaction.editReply({ embeds: [buildEmbed(gid, {
-        type: 'success', title: 'Ajouté à la file', description: track.title, url: track.uri || null
-      })]});
+      return interaction.editReply({ embeds: [buildEmbed(gid, { type: 'success', title: 'Ajouté à la file', description: track.title, url: track.uri || null })]});
     }
 
-    // URL YouTube/Spotify de piste OU recherche texte -> résolution SoundCloud
     const scTrack = await resolveToSoundCloudTrack(client, interaction.user, query);
     if (!scTrack) {
-      return interaction.editReply({ embeds: [buildEmbed(gid, {
-        type: 'error', title: 'Aucun résultat', description: 'Aucune piste SoundCloud pertinente trouvée.'
-      })]});
+      return interaction.editReply({ embeds: [buildEmbed(gid, { type: 'error', title: 'Aucun résultat', description: 'Aucune piste SoundCloud pertinente trouvée.' })]});
     }
 
     const wasPlaying = player.playing;
     player.queue.add(scTrack);
     if (!wasPlaying) player.play();
 
-    return interaction.editReply({ embeds: [buildEmbed(gid, {
-      type: 'success', title: 'Ajouté à la file', description: scTrack.title, url: scTrack.uri || null
-    })]});
+    return interaction.editReply({ embeds: [buildEmbed(gid, { type: 'success', title: 'Ajouté à la file', description: scTrack.title, url: scTrack.uri || null })]});
   }
 };
