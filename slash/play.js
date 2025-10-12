@@ -14,7 +14,7 @@ const SC_SET = /soundcloud\.com\/[^/]+\/sets\/[^/]+/i;
 const SC_TRACK = /soundcloud\.com\/[^/]+\/[^/]+/i;
 const YT_PLAYLIST = /(?:youtu\.be|youtube\.com).*?[?&]list=/i;
 const SP_PLAYLIST_OR_ALBUM = /(?:open\.spotify\.com\/(?:playlist|album)\/|spotify:(?:playlist|album):)/i;
-const AM_PLAYLIST_OR_ALBUM = /(?:music\.apple\.com\/[^/]+\/(?:playlist|album)\/)/i;
+const AM_PLAYLIST_OR_ALBUM = /music\.apple\.com\/[^/]+\/(?:playlist)/i;
 
 function isUrl(s) { try { new URL(s); return true; } catch { return false; } }
 function isYouTubeUri(uri) { return typeof uri === 'string' && /youtu\.be|youtube\.com/i.test(uri); }
@@ -151,6 +151,80 @@ async function fetchSpotifyOG(url, reqId) {
     }
   }
   return { title: stripTitleNoise(title), author: stripArtistNoise(artist) };
+}
+
+async function fetchAppleMusicOG(url, reqId) {
+  logInfo(reqId, 'meta:ogAM:start', { url });
+  try {
+    const res = await fetch(url, { 
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      redirect: 'follow'
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const html = await res.text();
+    
+    // Extraire le titre og:title ou <title>
+    const titleMatch = html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i)
+      || html.match(/<title>([^<]+)<\/title>/i);
+    
+    if (!titleMatch) {
+      logWarn(reqId, 'meta:ogAM:noTitle');
+      return null;
+    }
+    
+    let rawTitle = titleMatch[1].trim();
+    let title = '';
+    let author = '';
+    
+    // Format français: "TITRE par ARTISTE sur Apple Music"
+    let match = rawTitle.match(/^(.+?)\s+par\s+(.+?)\s+sur\s+Apple\s+Music$/i);
+    if (match) {
+      title = match[1].trim();
+      author = match[2].trim();
+    }
+    // Format anglais: "TITRE by ARTIST on Apple Music"
+    else {
+      match = rawTitle.match(/^(.+?)\s+by\s+(.+?)\s+on\s+Apple\s+Music$/i);
+      if (match) {
+        title = match[1].trim();
+        author = match[2].trim();
+      }
+    }
+    
+    // Format alternatif: "TITRE - ARTISTE"
+    if (!title && rawTitle.includes(' - ')) {
+      const parts = rawTitle.split(' - ', 2);
+      title = parts[0].trim();
+      author = parts[1].replace(/\s+sur\s+Apple\s+Music$/i, '').replace(/\s+on\s+Apple\s+Music$/i, '').trim();
+    }
+    
+    // Dernier recours: extraire depuis les meta tags music:
+    if (!title || !author) {
+      const musicTitle = html.match(/<meta\s+name="apple:title"\s+content="([^"]+)"/i);
+      const musicArtist = html.match(/<meta\s+property="music:musician"\s+content="([^"]+)"/i)
+        || html.match(/<meta\s+name="apple:content_artist"\s+content="([^"]+)"/i);
+      
+      if (musicTitle) title = musicTitle[1].trim();
+      if (musicArtist) author = musicArtist[1].trim();
+    }
+    
+    if (!title) {
+      logWarn(reqId, 'meta:ogAM:parsingFailed', { rawTitle });
+      return null;
+    }
+    
+    const meta = {
+      title: stripTitleNoise(title),
+      author: stripArtistNoise(author || 'Unknown Artist')
+    };
+    
+    logInfo(reqId, 'meta:ogAM:found', meta);
+    return meta;
+  }
+  catch (err) {
+    logWarn(reqId, 'meta:ogAM:error', err?.message || String(err));
+    return null;
+  }
 }
 
 async function getMetaOnce(client, requester, url, reqId) {
@@ -375,12 +449,21 @@ module.exports = {
       return;
     }
 
-    // Refus playlists/albums
-    if (isUrl(query) && (YT_PLAYLIST.test(query) || SP_PLAYLIST_OR_ALBUM.test(query) || AM_PLAYLIST_OR_ALBUM.test(query))) {
-      logWarn(reqId, 'reject:playlist', { query });
-      return interaction.editReply({
-        embeds: [buildEmbed(gid, { type: 'error', title: 'Playlist non supportée', description: 'Seules les playlists SoundCloud (sets) sont acceptées.' })]
-      });
+    // Refus playlists/albums (sauf Apple Music tracks dans albums)
+    if (isUrl(query)) {
+      if (YT_PLAYLIST.test(query) || SP_PLAYLIST_OR_ALBUM.test(query)) {
+        logWarn(reqId, 'reject:playlist', { query });
+        return interaction.editReply({
+          embeds: [buildEmbed(gid, { type: 'error', title: 'Playlist non supportée', description: 'Seules les playlists SoundCloud (sets) sont acceptées.' })]
+        });
+      }
+      // Apple Music: refuser playlist mais accepter /album/?i= (track dans album)
+      if (AM_PLAYLIST_OR_ALBUM.test(query) && !isAppleMusicTrackUrl(query)) {
+        logWarn(reqId, 'reject:playlist', { query });
+        return interaction.editReply({
+          embeds: [buildEmbed(gid, { type: 'error', title: 'Playlist non supportée', description: 'Seules les playlists SoundCloud (sets) sont acceptées.' })]
+        });
+      }
     }
 
     // SC set
