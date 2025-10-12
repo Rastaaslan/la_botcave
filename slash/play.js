@@ -20,10 +20,7 @@ function isYouTubeUri(uri) { return typeof uri === 'string' && /youtu\.be|youtub
 function isYouTubeUrl(s)   { return typeof s === 'string' && /youtu\.be|youtube\.com/i.test(s); }
 function isSpotifyTrackUrl(s) {
   if (typeof s !== 'string') return false;
-  // open.spotify.com/track/ID
-  // open.spotify.com/intl-fr/track/ID
-  // open.spotify.com/fr/track/ID
-  // spotify:track:ID
+  // Support: /track/ID, /intl-fr/track/ID, /fr/track/ID, spotify:track:ID
   return /https?:\/\/open\.spotify\.com\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?track\/[A-Za-z0-9]+/i.test(s)
       || /^spotify:track:[A-Za-z0-9]+$/i.test(s);
 }
@@ -147,6 +144,7 @@ async function getMetaOnce(client, requester, url, reqId) {
    ========================= */
 async function resolveToSoundCloudTrack(client, requester, urlOrQuery, reqId) {
   logInfo(reqId, 'resolve:start', { input: urlOrQuery });
+  logInfo(reqId, 'detect', { isURL: isUrl(urlOrQuery), isYT: isYouTubeUrl(urlOrQuery), isSP: isSpotifyTrackUrl(urlOrQuery) });
 
   const candidates = [];
   let best = null;
