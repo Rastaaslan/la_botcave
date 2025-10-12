@@ -248,7 +248,6 @@ async function fetchAppleMusicAlbumTracks(url, reqId) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const html = await res.text();
     
-    // Debug: afficher la taille du HTML
     logInfo(reqId, 'album:AM:htmlSize', { size: html.length });
     
     const titleMatch = html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i)
@@ -270,96 +269,129 @@ async function fetchAppleMusicAlbumTracks(url, reqId) {
     const tracks = [];
     const seenTitles = new Set();
     
-    // Chercher toutes les occurences de JSON serialisé
-    const jsonMatches = [
-      ...html.matchAll(/window\s*\[\s*["']INITIAL_DATA["']\s*\]\s*=\s*({[\s\S]{100,}?});/g),
-      ...html.matchAll(/window\.__INITIAL_STATE__\s*=\s*({[\s\S]{100,}?});/g),
-      ...html.matchAll(/serializedData\s*=\s*({[\s\S]{100,}?});/g)
-    ];
+    // Extraire TOUS les tags <script>
+    const scriptMatches = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+    logInfo(reqId, 'album:AM:scriptsFound', { count: scriptMatches.length });
     
-    logInfo(reqId, 'album:AM:jsonMatches', { count: jsonMatches.length });
-    
-    for (const match of jsonMatches) {
-      try {
-        const jsonStr = match[1];
-        logInfo(reqId, 'album:AM:tryingParse', { length: jsonStr.length });
+    for (let i = 0; i < scriptMatches.length; i++) {
+      const scriptContent = scriptMatches[i][1];
+      
+      // Ignorer les scripts trop courts ou qui ne contiennent pas de JSON
+      if (scriptContent.length < 100 || !scriptContent.includes('{')) continue;
+      
+      // Chercher des patterns JSON dans le script
+      const jsonPatterns = [
+        /(?:window\s*\[\s*["'].*?["']\s*\]|window\.\w+|var\s+\w+|let\s+\w+|const\s+\w+)\s*=\s*({[\s\S]+?});/g,
+        /({[\s\S]+?})/g // Pattern général pour capturer n'importe quel objet JSON
+      ];
+      
+      for (const pattern of jsonPatterns) {
+        const matches = [...scriptContent.matchAll(pattern)];
         
-        const data = JSON.parse(jsonStr);
-        
-        // Convertir en string et chercher tous les objets qui ressemblent à des tracks
-        const dataStr = JSON.stringify(data);
-        
-        // Méthode brutale: regex pour trouver les patterns de tracks
-        const trackPatterns = [
-          /"type"\s*:\s*"songs?"\s*,[\s\S]{0,500}?"name"\s*:\s*"([^"]+)"[\s\S]{0,500}?"artistName"\s*:\s*"([^"]+)"/g,
-          /"attributes"\s*:\s*{[\s\S]{0,500}?"name"\s*:\s*"([^"]+)"[\s\S]{0,500}?"artistName"\s*:\s*"([^"]+)"[\s\S]{0,500}?"trackNumber"\s*:\s*(\d+)/g
-        ];
-        
-        for (const pattern of trackPatterns) {
-          const matches = [...dataStr.matchAll(pattern)];
-          logInfo(reqId, 'album:AM:patternMatches', { pattern: pattern.source.substring(0, 50), count: matches.length });
-          
-          for (const m of matches) {
-            const title = m[1];
-            const artist = m[2] || artistName;
+        for (const match of matches) {
+          try {
+            const jsonStr = match[1];
             
-            if (title && !seenTitles.has(title)) {
-              seenTitles.add(title);
-              tracks.push({ title, author: artist });
-              logInfo(reqId, 'album:AM:trackFound', { num: tracks.length, title, artist });
-            }
+            // Filtrer les JSON trop petits
+            if (jsonStr.length < 200) continue;
+            
+            const data = JSON.parse(jsonStr);
+            
+            // Chercher récursivement les tracks
+            const findTracks = (obj, depth = 0) => {
+              if (depth > 25 || !obj || typeof obj !== 'object') return;
+              
+              // Pattern 1: obj.type === 'songs' avec attributes
+              if ((obj.type === 'songs' || obj.type === 'song') && obj.attributes?.name) {
+                const title = obj.attributes.name;
+                const artist = obj.attributes.artistName || artistName;
+                if (title && !seenTitles.has(title)) {
+                  seenTitles.add(title);
+                  tracks.push({ title, author: artist });
+                  logInfo(reqId, 'album:AM:track', { num: tracks.length, title });
+                }
+              }
+              
+              // Pattern 2: obj avec name et artistName directement
+              if (obj.name && obj.artistName && typeof obj.name === 'string') {
+                const title = obj.name;
+                const artist = obj.artistName;
+                // Vérifier que c'est bien une chanson (pas l'album)
+                if (title !== albumName && !seenTitles.has(title)) {
+                  seenTitles.add(title);
+                  tracks.push({ title, author: artist });
+                  logInfo(reqId, 'album:AM:track', { num: tracks.length, title });
+                }
+              }
+              
+              // Récursion sur tous les champs
+              for (const key in obj) {
+                const value = obj[key];
+                if (Array.isArray(value)) {
+                  value.forEach(item => findTracks(item, depth + 1));
+                } else if (value && typeof value === 'object') {
+                  findTracks(value, depth + 1);
+                }
+              }
+            };
+            
+            findTracks(data);
+            
+          } catch (e) {
+            // Pas un JSON valide, continuer
+            continue;
           }
         }
-        
-        // Méthode alternative: parcours récursif simple
-        const findAllSongs = (obj, depth = 0) => {
-          if (depth > 20 || !obj || typeof obj !== 'object') return;
-          
-          if (obj.type === 'songs' || obj.type === 'song') {
-            if (obj.attributes?.name && !seenTitles.has(obj.attributes.name)) {
-              seenTitles.add(obj.attributes.name);
-              tracks.push({
-                title: obj.attributes.name,
-                author: obj.attributes.artistName || artistName
-              });
-              logInfo(reqId, 'album:AM:trackFoundRecursive', { 
-                num: tracks.length, 
-                title: obj.attributes.name 
-              });
-            }
-          }
-          
-          for (const key in obj) {
-            if (Array.isArray(obj[key])) {
-              obj[key].forEach(item => findAllSongs(item, depth + 1));
-            } else if (obj[key] && typeof obj[key] === 'object') {
-              findAllSongs(obj[key], depth + 1);
-            }
-          }
-        };
-        
-        findAllSongs(data);
-        
-      } catch (e) {
-        logWarn(reqId, 'album:AM:parseError', { error: e.message });
-        continue;
       }
     }
     
-    // Si rien trouvé, sauvegarder un échantillon du HTML pour debug
+    // Si toujours rien, essayer une approche plus agressive avec regex sur le HTML brut
     if (tracks.length === 0) {
-      logWarn(reqId, 'album:AM:noTracksFound', { 
-        htmlSample: html.substring(0, 500),
-        containsPhysical: html.includes('Physical'),
-        containsDuaLipa: html.includes('Dua Lipa')
-      });
+      logWarn(reqId, 'album:AM:tryingRegexFallback');
+      
+      // Chercher des patterns comme "name":"Physical","artistName":"Dua Lipa"
+      const namePattern = /"name"\s*:\s*"([^"]{2,100}?)"\s*,[\s\S]{0,500}?"artistName"\s*:\s*"([^"]+?)"/g;
+      const matches = [...html.matchAll(namePattern)];
+      
+      logInfo(reqId, 'album:AM:regexMatches', { count: matches.length });
+      
+      for (const match of matches) {
+        const title = match[1];
+        const artist = match[2];
+        
+        // Filtrer les faux positifs (metadata, etc)
+        if (title.length > 1 && title !== albumName && !seenTitles.has(title) && artist.length > 1) {
+          seenTitles.add(title);
+          tracks.push({ title, author: artist });
+          logInfo(reqId, 'album:AM:trackRegex', { num: tracks.length, title, artist });
+        }
+      }
     }
     
-    logInfo(reqId, 'album:AM:final', { name: albumName, artist: artistName, count: tracks.length });
-    return { name: `${albumName}${artistName ? ' - ' + artistName : ''}`, tracks };
+    // Dédupliquer et nettoyer
+    const uniqueTracks = [];
+    const finalSeen = new Set();
+    for (const track of tracks) {
+      const key = `${track.title.toLowerCase()}-${track.author.toLowerCase()}`;
+      if (!finalSeen.has(key)) {
+        finalSeen.add(key);
+        uniqueTracks.push(track);
+      }
+    }
+    
+    logInfo(reqId, 'album:AM:final', { 
+      name: albumName, 
+      artist: artistName, 
+      count: uniqueTracks.length 
+    });
+    
+    return { 
+      name: `${albumName}${artistName ? ' - ' + artistName : ''}`, 
+      tracks: uniqueTracks 
+    };
   }
   catch (err) {
-    logWarn(reqId, 'album:AM:error', { error: err.message, stack: err.stack?.substring(0, 200) });
+    logWarn(reqId, 'album:AM:error', { error: err.message });
     return null;
   }
 }
