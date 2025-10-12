@@ -66,15 +66,19 @@ async function scSearch(client, requester, q, limit = 10) {
 async function getMetaFromUrl(client, requester, url) {
   try {
     const res = await client.manager.search({ query: url, requester });
+    // Si la source plante (YouTube), la lib peut lever; on catch au-dessus.
     return res?.tracks?.[0] || null;
-  } catch { return null; }
+  } catch (e) {
+    // Important: ne propage jamais l’erreur YouTube, on retombera sur la recherche texte SC.
+    return null;
+  }
 }
 
 async function resolveToSoundCloudTrack(client, requester, urlOrQuery) {
   let candidates = [];
 
   if (/youtu\.be|youtube\.com/i.test(urlOrQuery) || /open\.spotify\.com\/track|spotify:track:/i.test(urlOrQuery)) {
-    const src = await getMetaFromUrl(client, requester, urlOrQuery);
+    const src = await getMetaFromUrl(client, requester, urlOrQuery); // retourne null en cas d'échec YT
     if (src) {
       const artist = stripArtistNoise(src.author);
       const title = stripTitleNoise(src.title);
