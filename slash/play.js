@@ -2,10 +2,12 @@
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { buildEmbed } = require('../utils/embedHelper');
 
+/* =========================
+   Constantes & Détection
+   ========================= */
 const LOG_PREFIX = '[PLAY]';
 const SC_PREFIX  = '[SC]';
 
-// Détections
 const SC_SET = /soundcloud\.com\/[^/]+\/sets\/[^/]+/i;
 const SC_TRACK = /soundcloud\.com\/[^/]+\/[^/]+/i;
 
@@ -17,12 +19,16 @@ const SP_TRACK = /(?:open\.spotify\.com\/track\/([A-Za-z0-9]+)|spotify:track:([A
 
 function isUrl(s) { try { new URL(s); return true; } catch { return false; } }
 
-// Utils logs sûrs (pas de secrets)
-function logInfo(...args)  { console.log(LOG_PREFIX, ...args); }
-function logWarn(...args)  { console.warn(LOG_PREFIX, ...args); }
-function logError(...args) { console.error(LOG_PREFIX, ...args); }
+/* =========================
+   Logging helpers
+   ========================= */
+function logInfo(reqId, tag, payload)  { console.log(LOG_PREFIX, reqId, tag, payload || ''); }
+function logWarn(reqId, tag, payload)  { console.warn(LOG_PREFIX, reqId, tag, payload || ''); }
+function logError(reqId, tag, payload) { console.error(LOG_PREFIX, reqId, tag, payload || ''); }
 
-// Normalisation & scoring
+/* =========================
+   Normalisation & scoring
+   ========================= */
 function normalize(s) {
   return (s || '')
     .toLowerCase()
@@ -60,49 +66,55 @@ function jaccard(a, b) {
 function coreTokens(s) {
   return [...tokenSet(s)].filter(w => w.length > 2);
 }
-
 function dynamicBoost(title, author, wantTokens) {
   let b = 0;
   const titleHasAll3 = wantTokens.slice(0, 3).every(t => tokenSet(title).has(t));
   if (titleHasAll3) b += 0.15;
-  // Bonus si l'auteur semble contenir l'artiste demandé (tokens communs)
+  // Bonus si l'auteur recoupe la requête (tokens communs)
   const A = tokenSet(author);
   if (wantTokens.some(t => A.has(t))) b += 0.12;
   return b;
 }
 
-// Recherches SoundCloud
-async function scSearch(client, requester, q, limit = 10) {
-  console.log(SC_PREFIX, 'search', JSON.stringify(q), 'limit=', limit);
+/* =========================
+   Recherches SoundCloud
+   ========================= */
+async function scSearch(client, requester, q, limit, reqId) {
+  console.log(SC_PREFIX, reqId, 'search', JSON.stringify(q), 'limit=', limit);
   const res = await client.manager.search({
     query: q,              // texte pur
     source: 'soundcloud',  // la lib formera scsearch:q
     requester
   });
-  console.log(SC_PREFIX, 'results', (res?.tracks || []).length);
+  const n = (res?.tracks || []).length;
+  console.log(SC_PREFIX, reqId, 'results', n);
   return (res?.tracks || []).slice(0, limit);
 }
 
-// Méta depuis URL (tolère l’échec YT)
-async function getMetaFromUrl(client, requester, url) {
+/* =========================
+   Méta depuis URL (tolère l’échec YT)
+   ========================= */
+async function getMetaFromUrl(client, requester, url, reqId) {
   try {
-    console.log(LOG_PREFIX, 'meta:url', url);
+    logInfo(reqId, 'meta:url', url);
     const res = await client.manager.search({ query: url, requester });
     const t = res?.tracks?.[0];
     if (t) {
-      console.log(LOG_PREFIX, 'meta:ok', { title: t.title, author: t.author });
+      logInfo(reqId, 'meta:ok', { title: t.title, author: t.author });
     } else {
-      console.log(LOG_PREFIX, 'meta:none');
+      logWarn(reqId, 'meta:none');
     }
     return t || null;
   } catch (e) {
-    console.log(LOG_PREFIX, 'meta:error', e?.message || e);
+    logWarn(reqId, 'meta:error', e?.message || String(e));
     return null;
   }
 }
 
-// URL -> texte neutre
-function deurlToText(s) {
+/* =========================
+   URL -> texte neutre
+   ========================= */
+function deurlToText(s, reqId) {
   try {
     const u = new URL(s);
     const hostWords = (u.hostname || '').replace(/^www\./, '').split('.').join(' ');
@@ -110,23 +122,29 @@ function deurlToText(s) {
     const searchWords = (u.search || '').replace(/[?&=]+/g, ' ');
     const raw = `${hostWords} ${pathWords} ${searchWords}`;
     const out = normalize(raw.replace(/\b(youtube|youtu|watch|v|list|feature|si|index|t)\b/gi, ''));
-    console.log(LOG_PREFIX, 'deurlToText', out);
+    logInfo(reqId, 'deurlToText', out);
     return out;
   } catch {
     const out = normalize(s.replace(/https?:\/\/\S+/g, ' '));
-    console.log(LOG_PREFIX, 'deurlToText(fallback)', out);
+    logInfo(reqId, 'deurlToText:fallback', out);
     return out;
   }
 }
 
-// Rebond YT/SP -> SoundCloud avec logs détaillés
-async function resolveToSoundCloudTrack(client, requester, urlOrQuery) {
-  console.log(LOG_PREFIX, 'resolve:start', { input: urlOrQuery });
+/* =========================
+   Rebond YT/SP -> SoundCloud
+   ========================= */
+async function resolveToSoundCloudTrack(client, requester, urlOrQuery, reqId) {
+  logInfo(reqId, 'resolve:start', { input: urlOrQuery });
+
+  // Variables strictement locales (stateless)
   let candidates = [];
+  let best = null;
+  let bestScore = 0;
 
   // 1) Essai méta si URL YT/SP de piste
   if (/youtu\.be|youtube\.com/i.test(urlOrQuery) || /open\.spotify\.com\/track|spotify:track:/i.test(urlOrQuery)) {
-    const src = await getMetaFromUrl(client, requester, urlOrQuery);
+    const src = await getMetaFromUrl(client, requester, urlOrQuery, reqId);
     if (src) {
       const artist = stripArtistNoise(src.author);
       const title = stripTitleNoise(src.title);
@@ -136,60 +154,57 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery) {
         `${title}`,
         `${artist}`
       ].filter(Boolean);
-      console.log(LOG_PREFIX, 'candidates:meta', combos);
+      logInfo(reqId, 'candidates:meta', combos);
       candidates.push(...combos);
     }
   }
 
   // 2) Fallback: URL -> texte ou nettoyage direct
   if (candidates.length === 0) {
-    const cleaned = isUrl(urlOrQuery) ? deurlToText(urlOrQuery) : stripTitleNoise(urlOrQuery);
+    const cleaned = isUrl(urlOrQuery) ? deurlToText(urlOrQuery, reqId) : stripTitleNoise(urlOrQuery);
     if (cleaned) candidates.push(cleaned);
-    console.log(LOG_PREFIX, 'candidates:fallback', candidates);
+    logInfo(reqId, 'candidates:fallback', candidates);
   }
   if (candidates.length === 0) {
-    console.log(LOG_PREFIX, 'resolve:abort no candidates');
+    logWarn(reqId, 'resolve:abort no candidates');
     return null;
   }
 
   // 3) Variantes initiales
-  let best = null;
-  let bestScore = 0;
   for (const q of candidates) {
     const wantTokens = coreTokens(q);
-    const tracks = await scSearch(client, requester, q, 10);
+    const tracks = await scSearch(client, requester, q, 10, reqId);
     let i = 0;
     for (const t of tracks) {
       const title = t.title || '';
       const author = t.author || '';
       let score = 0.6 * jaccard(title, q) + 0.4 * jaccard(author, q);
-      // Boost dynamiques
       score += dynamicBoost(title, author, wantTokens);
-      // Pénalités set/mix/live
       if (/mix|set|live|full album/i.test(title)) score -= 0.10;
       if (score > bestScore) { best = t; bestScore = score; }
       if (i < 3) {
-        console.log(SC_PREFIX, 'score', { q, title, author, score: Number(score.toFixed(3)) });
+        console.log(SC_PREFIX, reqId, 'score', { q, title, author, score: Number(score.toFixed(3)) });
       }
       i++;
     }
-    console.log(LOG_PREFIX, 'candidateDone', { q, bestScore: Number(bestScore.toFixed(3)) });
+    logInfo(reqId, 'candidateDone', { q, bestScore: Number(bestScore.toFixed(3)) });
     if (best && bestScore >= 0.45) break;
   }
 
   // 4) Essai guidé si pas convaincant
   if (!best || bestScore < 0.45) {
     const guided = [
+      // variantes fréquentes utiles
       'passenger let her go',
       'let her go passenger',
       'let her go',
       'joji glimpse of us',
       'glimpse of us joji'
     ];
-    console.log(LOG_PREFIX, 'guided:try', guided);
+    logInfo(reqId, 'guided:try', guided);
     for (const g of guided) {
       const wantTokens = coreTokens(g);
-      const tracks = await scSearch(client, requester, g, 10);
+      const tracks = await scSearch(client, requester, g, 10, reqId);
       let i = 0;
       for (const t of tracks) {
         const title = t.title || '';
@@ -199,7 +214,7 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery) {
         if (/mix|set|live|full album/i.test(title)) score -= 0.10;
         if (score > bestScore) { best = t; bestScore = score; }
         if (i < 3) {
-          console.log(SC_PREFIX, 'guidedScore', { g, title, author, score: Number(score.toFixed(3)) });
+          console.log(SC_PREFIX, reqId, 'guidedScore', { g, title, author, score: Number(score.toFixed(3)) });
         }
         i++;
       }
@@ -208,10 +223,10 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery) {
   }
 
   if (!best) {
-    console.log(LOG_PREFIX, 'resolve:none');
+    logWarn(reqId, 'resolve:none');
     return null;
   }
-  console.log(LOG_PREFIX, 'resolve:pick', {
+  logInfo(reqId, 'resolve:pick', {
     title: best.title,
     author: best.author,
     uri: best.uri,
@@ -220,8 +235,10 @@ async function resolveToSoundCloudTrack(client, requester, urlOrQuery) {
   return best;
 }
 
-// Ajout par lots (sets SC)
-async function addInBatches(player, tracks, batchSize = 25) {
+/* =========================
+   Ajout par lots (sets SC)
+   ========================= */
+async function addInBatches(player, tracks, batchSize, reqId) {
   let added = 0;
   for (let i = 0; i < tracks.length; i += batchSize) {
     const slice = tracks.slice(i, i + batchSize);
@@ -229,12 +246,14 @@ async function addInBatches(player, tracks, batchSize = 25) {
     added += slice.length;
     await new Promise(r => setTimeout(r, 120));
   }
-  console.log(LOG_PREFIX, 'batchAdded', { added, total: tracks.length });
+  logInfo(reqId, 'batchAdded', { added, total: tracks.length });
   return added;
 }
 
-// Garde-fou création/connexion
-async function ensurePlayer(interaction, client, gid, vc) {
+/* =========================
+   Garde-fou création/connexion
+   ========================= */
+async function ensurePlayer(interaction, client, gid, vc, reqId) {
   if (!client.manager || !client.manager.nodes || client.manager.nodes.size === 0) {
     await interaction.editReply({
       embeds: [buildEmbed(gid, {
@@ -256,7 +275,7 @@ async function ensurePlayer(interaction, client, gid, vc) {
       autoPlay: true,
       volume: 35
     });
-    console.log(LOG_PREFIX, 'player:create', { guildId: gid, vc: vc.id });
+    logInfo(reqId, 'player:create', { guildId: gid, vc: vc.id });
     if (!player) {
       await interaction.editReply({
         embeds: [buildEmbed(gid, {
@@ -273,7 +292,7 @@ async function ensurePlayer(interaction, client, gid, vc) {
     try {
       await player.connect({ setDeaf: true, setMute: false });
       await new Promise(r => setTimeout(r, 400));
-      console.log(LOG_PREFIX, 'player:connected', { guildId: gid });
+      logInfo(reqId, 'player:connected', { guildId: gid });
     } catch (e) {
       await interaction.editReply({
         embeds: [buildEmbed(gid, {
@@ -289,7 +308,9 @@ async function ensurePlayer(interaction, client, gid, vc) {
   return player;
 }
 
-// Commande slash
+/* =========================
+   Commande slash
+   ========================= */
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('play')
@@ -297,11 +318,14 @@ module.exports = {
     .addStringOption(o => o.setName('query').setDescription('Recherche ou URL').setRequired(true)),
 
   async execute(interaction, client) {
+    // reqId unique par interaction (anti-confusion entre requêtes)
+    const reqId = `${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+
     const gid = interaction.guild.id;
     const member = interaction.member;
     const vc = member.voice?.channel;
 
-    logInfo('cmd', { user: interaction.user?.id, guild: gid });
+    logInfo(reqId, 'cmd:start', { user: interaction.user?.id, guild: gid });
 
     if (!vc) {
       return interaction.reply({
@@ -317,19 +341,23 @@ module.exports = {
       });
     }
 
+    // Lire la query à CHAQUE interaction (aucun cache global)
     const query = interaction.options.getString('query', true);
-    logInfo('input', { query });
+    logInfo(reqId, 'input', { query });
 
     await interaction.deferReply();
 
     let player;
     try {
-      player = await ensurePlayer(interaction, client, gid, vc);
-    } catch { return; }
+      player = await ensurePlayer(interaction, client, gid, vc, reqId);
+    } catch {
+      logWarn(reqId, 'abort:ensurePlayer');
+      return;
+    }
 
-    // Refus playlists/albums YT & Spotify
+    // Refus explicite playlists/albums YT & Spotify
     if (isUrl(query) && (YT_PLAYLIST.test(query) || SP_PLAYLIST_OR_ALBUM.test(query))) {
-      logWarn('reject:playlist', { query });
+      logWarn(reqId, 'reject:playlist', { query });
       return interaction.editReply({
         embeds: [buildEmbed(gid, {
           type: 'error',
@@ -339,12 +367,12 @@ module.exports = {
       });
     }
 
-    // Playlists SoundCloud
+    // Playlists SoundCloud (sets)
     if (isUrl(query) && SC_SET.test(query)) {
-      logInfo('set:sc', { query });
+      logInfo(reqId, 'set:sc', { query });
       const res = await client.manager.search({ query, requester: interaction.user });
       const count = res?.tracks?.length || 0;
-      logInfo('set:found', { count });
+      logInfo(reqId, 'set:found', { count });
       if (!count) {
         return interaction.editReply({
           embeds: [buildEmbed(gid, { type: 'error', title: 'Aucun résultat', description: 'Set SoundCloud introuvable.' })]
@@ -354,10 +382,10 @@ module.exports = {
         (typeof res.loadType === 'string' && res.loadType.toLowerCase().includes('playlist')) ||
         (res.tracks?.length > 1 && res.playlistInfo);
       const tracks = isPlaylist ? res.tracks : [res.tracks[0]];
-      const added = await addInBatches(player, tracks, 25);
+      const added = await addInBatches(player, tracks, 25, reqId);
       if (!player.playing) player.play();
-
       const title = res.playlistInfo?.name || 'Set SoundCloud';
+      logInfo(reqId, 'queue:set:added', { added, title });
       return interaction.editReply({
         embeds: [buildEmbed(gid, {
           type: 'success',
@@ -370,10 +398,10 @@ module.exports = {
 
     // URL piste SoundCloud → direct
     if (isUrl(query) && SC_TRACK.test(query)) {
-      logInfo('track:sc', { query });
+      logInfo(reqId, 'track:sc', { query });
       const res = await client.manager.search({ query, requester: interaction.user });
       const count = res?.tracks?.length || 0;
-      logInfo('track:sc:found', { count });
+      logInfo(reqId, 'track:sc:found', { count });
       if (!count) {
         return interaction.editReply({
           embeds: [buildEmbed(gid, { type: 'error', title: 'Introuvable', description: 'Piste SoundCloud non trouvée.' })]
@@ -383,15 +411,16 @@ module.exports = {
       const wasPlaying = player.playing;
       player.queue.add(track);
       if (!wasPlaying) player.play();
+      logInfo(reqId, 'queue:add:sc', { title: track.title, author: track.author });
       return interaction.editReply({
         embeds: [buildEmbed(gid, { type: 'success', title: 'Ajouté à la file', description: track.title, url: track.uri || null })]
       });
     }
 
     // Lien YT/SP piste OU recherche texte → rebond SoundCloud
-    const scTrack = await resolveToSoundCloudTrack(client, interaction.user, query);
+    const scTrack = await resolveToSoundCloudTrack(client, interaction.user, query, reqId);
     if (!scTrack) {
-      logWarn('resolve:none', { query });
+      logWarn(reqId, 'resolve:none', { query });
       return interaction.editReply({
         embeds: [buildEmbed(gid, { type: 'error', title: 'Aucun résultat', description: 'Aucune piste SoundCloud pertinente trouvée.' })]
       });
@@ -400,8 +429,7 @@ module.exports = {
     const wasPlaying = player.playing;
     player.queue.add(scTrack);
     if (!wasPlaying) player.play();
-
-    logInfo('queue:add', { title: scTrack.title, author: scTrack.author, uri: scTrack.uri });
+    logInfo(reqId, 'queue:add', { title: scTrack.title, author: scTrack.author, uri: scTrack.uri });
 
     return interaction.editReply({
       embeds: [buildEmbed(gid, { type: 'success', title: 'Ajouté à la file', description: scTrack.title, url: scTrack.uri || null })]
