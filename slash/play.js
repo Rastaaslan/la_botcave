@@ -29,8 +29,8 @@ function isSpotifyTrackUrl(s) {
 
 function isAppleMusicTrackUrl(s) {
   if (typeof s !== 'string') return false;
-  // Support: /album/NAME/ID?i=TRACKID, /fr/album/NAME/ID?i=TRACKID
-  return /https?:\/\/music\.apple\.com\/(?:[a-z]{2}\/)?album\/[^\/]+\/\d+\?i=\d+/i.test(s);
+  // Support: /album/NAME/ID?i=TRACKID ET /song/NAME/TRACKID
+  return /https?:\/\/music\.apple\.com\/(?:[a-z]{2}\/)?(?:album\/[^\/]+\/\d+\?i=\d+|song\/[^\/]+\/\d+)/i.test(s);
 }
 
 /* =========================
