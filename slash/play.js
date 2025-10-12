@@ -14,7 +14,8 @@ const SC_SET = /soundcloud\.com\/[^/]+\/sets\/[^/]+/i;
 const SC_TRACK = /soundcloud\.com\/[^/]+\/[^/]+/i;
 const YT_PLAYLIST = /(?:youtu\.be|youtube\.com).*?[?&]list=/i;
 const SP_PLAYLIST_OR_ALBUM = /(?:open\.spotify\.com\/(?:playlist|album)\/|spotify:(?:playlist|album):)/i;
-const AM_PLAYLIST_OR_ALBUM = /music\.apple\.com\/[^/]+\/(?:playlist)/i;
+const AM_PLAYLIST = /music\.apple\.com\/[^/]+\/playlist\//i;
+const AM_ALBUM = /music\.apple\.com\/[^/]+\/album\/[^/]+\/\d+(?:\?|$)/i;
 
 function isUrl(s) { try { new URL(s); return true; } catch { return false; } }
 function isYouTubeUri(uri) { return typeof uri === 'string' && /youtu\.be|youtube\.com/i.test(uri); }
@@ -31,6 +32,17 @@ function isAppleMusicTrackUrl(s) {
   if (typeof s !== 'string') return false;
   // Support: /album/NAME/ID?i=TRACKID ET /song/NAME/TRACKID
   return /https?:\/\/music\.apple\.com\/(?:[a-z]{2}\/)?(?:album\/[^\/]+\/\d+\?i=\d+|song\/[^\/]+\/\d+)/i.test(s);
+}
+
+function isAppleMusicPlaylistUrl(s) {
+  if (typeof s !== 'string') return false;
+  return /https?:\/\/music\.apple\.com\/(?:[a-z]{2}\/)?playlist\/[^\/]+\/pl\.[a-zA-Z0-9-]+/i.test(s);
+}
+
+function isAppleMusicAlbumUrl(s) {
+  if (typeof s !== 'string') return false;
+  // Album sans ?i= (album complet, pas un track)
+  return /https?:\/\/music\.apple\.com\/(?:[a-z]{2}\/)?album\/[^\/]+\/\d+(?:\?(?!i=)|$)/i.test(s);
 }
 
 /* =========================
@@ -223,6 +235,56 @@ async function fetchAppleMusicOG(url, reqId) {
   }
   catch (err) {
     logWarn(reqId, 'meta:ogAM:error', err?.message || String(err));
+    return null;
+  }
+}
+
+async function fetchAppleMusicPlaylistTracks(url, reqId) {
+  logInfo(reqId, 'playlist:AM:start', { url });
+  try {
+    const res = await fetch(url, { 
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      redirect: 'follow'
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const html = await res.text();
+    
+    // Extraire le nom de la playlist
+    const titleMatch = html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i)
+      || html.match(/<title>([^<]+)<\/title>/i);
+    
+    let playlistName = 'Playlist Apple Music';
+    if (titleMatch) {
+      playlistName = titleMatch[1]
+        .replace(/\s+sur\s+Apple\s+Music$/i, '')
+        .replace(/\s+on\s+Apple\s+Music$/i, '')
+        .trim();
+    }
+    
+    // Extraire les tracks depuis le JSON-LD ou le HTML
+    const tracks = [];
+    const jsonLdMatch = html.match(/<script\s+type="application\/ld\+json">([^<]+)<\/script>/i);
+    if (jsonLdMatch) {
+      try {
+        const jsonLd = JSON.parse(jsonLdMatch[1]);
+        if (jsonLd.track && Array.isArray(jsonLd.track)) {
+          for (const track of jsonLd.track) {
+            tracks.push({
+              title: track.name || '',
+              author: track.byArtist?.name || ''
+            });
+          }
+        }
+      } catch (e) {
+        logWarn(reqId, 'playlist:AM:jsonParseFailed', e.message);
+      }
+    }
+    
+    logInfo(reqId, 'playlist:AM:found', { name: playlistName, count: tracks.length });
+    return { name: playlistName, tracks };
+  }
+  catch (err) {
+    logWarn(reqId, 'playlist:AM:error', err?.message || String(err));
     return null;
   }
 }
@@ -449,21 +511,69 @@ module.exports = {
       return;
     }
 
-    // Refus playlists/albums (sauf Apple Music tracks dans albums)
-    if (isUrl(query)) {
-      if (YT_PLAYLIST.test(query) || SP_PLAYLIST_OR_ALBUM.test(query)) {
-        logWarn(reqId, 'reject:playlist', { query });
+    // Refus playlists YouTube et Spotify
+    if (isUrl(query) && (YT_PLAYLIST.test(query) || SP_PLAYLIST_OR_ALBUM.test(query))) {
+      logWarn(reqId, 'reject:playlist', { query });
+      return interaction.editReply({
+        embeds: [buildEmbed(gid, { type: 'error', title: 'Playlist non supportée', description: 'Seules les playlists SoundCloud et Apple Music sont acceptées.' })]
+      });
+    }
+
+    // Apple Music Playlist
+    if (isUrl(query) && isAppleMusicPlaylistUrl(query)) {
+      logInfo(reqId, 'playlist:AM', { query });
+      const playlistData = await fetchAppleMusicPlaylistTracks(query, reqId);
+      
+      if (!playlistData || playlistData.tracks.length === 0) {
         return interaction.editReply({
-          embeds: [buildEmbed(gid, { type: 'error', title: 'Playlist non supportée', description: 'Seules les playlists SoundCloud (sets) sont acceptées.' })]
+          embeds: [buildEmbed(gid, { type: 'error', title: 'Playlist introuvable', description: 'Impossible de récupérer les tracks de cette playlist.' })]
         });
       }
-      // Apple Music: refuser playlist mais accepter /album/?i= (track dans album)
-      if (AM_PLAYLIST_OR_ALBUM.test(query) && !isAppleMusicTrackUrl(query)) {
-        logWarn(reqId, 'reject:playlist', { query });
+
+      let added = 0;
+      for (const meta of playlistData.tracks) {
+        const scTrack = await resolveToSoundCloudTrack(client, interaction.user, `${meta.author} ${meta.title}`, reqId);
+        if (scTrack && !isYouTubeUri(scTrack.uri)) {
+          player.queue.add(scTrack);
+          added++;
+        }
+        if (added >= 50) break; // Limite à 50 tracks
+      }
+
+      if (!player.playing) player.play();
+
+      logInfo(reqId, 'playlist:AM:added', { name: playlistData.name, added });
+      return interaction.editReply({
+        embeds: [buildEmbed(gid, { type: 'success', title: 'Playlist Apple Music ajoutée', description: `**${playlistData.name}**\n${added} pistes ajoutées sur ${playlistData.tracks.length}.`, url: query })]
+      });
+    }
+
+    // Apple Music Album
+    if (isUrl(query) && isAppleMusicAlbumUrl(query)) {
+      logInfo(reqId, 'album:AM', { query });
+      const albumData = await fetchAppleMusicPlaylistTracks(query, reqId);
+      
+      if (!albumData || albumData.tracks.length === 0) {
         return interaction.editReply({
-          embeds: [buildEmbed(gid, { type: 'error', title: 'Playlist non supportée', description: 'Seules les playlists SoundCloud (sets) sont acceptées.' })]
+          embeds: [buildEmbed(gid, { type: 'error', title: 'Album introuvable', description: 'Impossible de récupérer les tracks de cet album.' })]
         });
       }
+
+      let added = 0;
+      for (const meta of albumData.tracks) {
+        const scTrack = await resolveToSoundCloudTrack(client, interaction.user, `${meta.author} ${meta.title}`, reqId);
+        if (scTrack && !isYouTubeUri(scTrack.uri)) {
+          player.queue.add(scTrack);
+          added++;
+        }
+      }
+
+      if (!player.playing) player.play();
+
+      logInfo(reqId, 'album:AM:added', { name: albumData.name, added });
+      return interaction.editReply({
+        embeds: [buildEmbed(gid, { type: 'success', title: 'Album Apple Music ajouté', description: `**${albumData.name}**\n${added} pistes ajoutées sur ${albumData.tracks.length}.`, url: query })]
+      });
     }
 
     // SC set
