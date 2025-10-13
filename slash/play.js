@@ -235,7 +235,6 @@ async function ensurePlayer(interaction, client, gid, vc, reqId) {
   let player = client.manager.players.get(gid);
   
   if (!player) {
-    // CORRECTION: Utiliser createPlayer au lieu de create
     player = client.manager.createPlayer({
       guildId: gid,
       voiceChannelId: vc.id,
@@ -336,7 +335,7 @@ module.exports = {
         await player.play();
       }
       return interaction.editReply({
-        embeds: [buildEmbed(client, 'queue', `✅ **${result.tracks.length} pistes** ajoutées depuis **${result.name}**`)]
+        embeds: [buildEmbed(client, 'queue', `✅ **${result.tracks.length} pistes** ajoutées depuis **${result.name || 'Playlist'}**`)]
       });
     }
 
@@ -384,7 +383,7 @@ module.exports = {
       }
       
       return interaction.editReply({
-        embeds: [buildEmbed(client, 'error', 'Impossible de charger la playlist/album Apple Music. Vérifie que LavaSrc est bien configuré avec Apple Music.')]
+        embeds: [buildEmbed(client, 'error', 'Impossible de charger la playlist/album Apple Music. Vérifie que LavaSrc est configuré avec un token Apple Music valide.')]
       });
     }
 
@@ -403,7 +402,7 @@ module.exports = {
           await player.play();
         }
         return interaction.editReply({
-          embeds: [buildEmbed(client, 'queue', `✅ Ajouté : **${track.title}** par **${track.author}**`)]
+          embeds: [buildEmbed(client, 'queue', `✅ Ajouté : **${track.title || 'Piste SoundCloud'}** par **${track.author || 'Artiste inconnu'}**`)]
         });
       }
       return interaction.editReply({
@@ -432,7 +431,7 @@ module.exports = {
             await player.play();
           }
           return interaction.editReply({
-            embeds: [buildEmbed(client, 'queue', `✅ Ajouté : **${track.title}** par **${track.author}**`)]
+            embeds: [buildEmbed(client, 'queue', `✅ Ajouté : **${track.title || 'Piste'}** par **${track.author || 'Artiste inconnu'}**`)]
           });
         }
         return interaction.editReply({
@@ -452,9 +451,9 @@ module.exports = {
       }
 
       const bestTrack = pickBestMatch(candidates, meta.title, meta.author, reqId);
-      if (!bestTrack) {
+      if (!bestTrack || !bestTrack.title) {
         return interaction.editReply({
-          embeds: [buildEmbed(client, 'error', 'Aucune correspondance trouvée.')]
+          embeds: [buildEmbed(client, 'error', 'Aucune correspondance valide trouvée.')]
         });
       }
 
@@ -464,7 +463,7 @@ module.exports = {
       }
 
       return interaction.editReply({
-        embeds: [buildEmbed(client, 'queue', `✅ Ajouté (${platform} → SC) : **${bestTrack.title}** par **${bestTrack.author}**`)]
+        embeds: [buildEmbed(client, 'queue', `✅ Ajouté (${platform} → SC) : **${bestTrack.title}** par **${bestTrack.author || 'Artiste inconnu'}**`)]
       });
     }
 
@@ -483,13 +482,21 @@ module.exports = {
     }
 
     const track = candidates[0];
+    
+    // Validation des données du track
+    if (!track || !track.title || track.title.trim() === '') {
+      return interaction.editReply({
+        embeds: [buildEmbed(client, 'error', 'Résultat invalide reçu de SoundCloud.')]
+      });
+    }
+
     player.queue.add(track);
     if (!player.playing && !player.paused) {
       await player.play();
     }
 
     return interaction.editReply({
-      embeds: [buildEmbed(client, 'queue', `✅ Ajouté : **${track.title}** par **${track.author}**`)]
+      embeds: [buildEmbed(client, 'queue', `✅ Ajouté : **${track.title}** par **${track.author || 'Artiste inconnu'}**`)]
     });
   }
 };
