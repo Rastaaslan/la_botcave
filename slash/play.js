@@ -16,7 +16,6 @@ const SC_TRACK = /soundcloud\.com\/[^/]+\/[^/]+/i;
 const YT_PLAYLIST = /(?:youtu\.be|youtube\.com).*?[?&]list=/i;
 const SP_PLAYLIST_OR_ALBUM = /(?:open\.spotify\.com\/(?:playlist|album)\/|spotify:(?:playlist|album):)/i;
 
-// Apple Music - détection simplifiée (Lavalink gérera tout)
 const AM_PLAYLIST = /music\.apple\.com\/[^/]+\/playlist\//i;
 const AM_ALBUM = /music\.apple\.com\/[^/]+\/album\/[^/]+\/\d+(?:\?(?!i=)|$)/i;
 const AM_TRACK = /music\.apple\.com\/[^/]+\/(?:album\/[^/]+\/\d+\?i=\d+|song\/[^/]+\/\d+)/i;
@@ -157,26 +156,6 @@ async function fetchSpotifyOG(url, reqId) {
   return { title: stripTitleNoise(title), author: stripArtistNoise(artist) };
 }
 
-async function fetchUniqueMeta(uri, reqId) {
-  logInfo(reqId, 'meta:start', { uri });
-  if (isYouTubeUrl(uri)) {
-    const yt = await fetchYouTubeOEmbed(uri, reqId);
-    if (yt) {
-      logInfo(reqId, 'meta:YT:ok', { title: yt.title, author: yt.author });
-      return { title: stripTitleNoise(yt.title), author: stripArtistNoise(yt.author) };
-    }
-  }
-  if (isSpotifyTrackUrl(uri)) {
-    const sp = await fetchSpotifyOG(uri, reqId);
-    if (sp) {
-      logInfo(reqId, 'meta:SP:ok', { title: sp.title, author: sp.author });
-      return sp;
-    }
-  }
-  logWarn(reqId, 'meta:fallback');
-  return null;
-}
-
 /* =========================
    Scoring & Best Match
 ========================= */
@@ -227,7 +206,7 @@ async function loadSoundCloudSet(url, client, requester, reqId) {
 async function ensurePlayer(interaction, client, gid, vc, reqId) {
   if (!client.manager || !client.manager.nodes || client.manager.nodes.size === 0) {
     await interaction.editReply({
-      embeds: [buildEmbed(client, 'error', 'Serveur audio indisponible. Ressaie plus tard.')]
+      embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Serveur audio indisponible. Ressaie plus tard.' })]
     });
     throw new Error('No Lavalink nodes connected');
   }
@@ -247,7 +226,7 @@ async function ensurePlayer(interaction, client, gid, vc, reqId) {
 
   if (!player) {
     await interaction.editReply({
-      embeds: [buildEmbed(client, 'error', 'Création du lecteur impossible.')]
+      embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Création du lecteur impossible.' })]
     });
     throw new Error('createPlayer returned undefined');
   }
@@ -259,7 +238,7 @@ async function ensurePlayer(interaction, client, gid, vc, reqId) {
       logInfo(reqId, 'player:connected', { guildId: gid });
     } catch (e) {
       await interaction.editReply({
-        embeds: [buildEmbed(client, 'error', 'Connexion vocale échouée.')]
+        embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Connexion vocale échouée.' })]
       });
       throw e;
     }
@@ -285,6 +264,7 @@ module.exports = {
 
   async execute(interaction, client) {
     const reqId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const gid = interaction.guild.id;
     logInfo(reqId, 'execute:start', { user: interaction.user.tag, guild: interaction.guild?.name });
 
     await interaction.deferReply();
@@ -293,21 +273,21 @@ module.exports = {
     // Vérifications basiques
     if (!interaction.member?.voice?.channel) {
       return interaction.editReply({
-        embeds: [buildEmbed(client, 'error', 'Tu dois être dans un canal vocal.')]
+        embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Tu dois être dans un canal vocal.' })]
       });
     }
 
     const voiceChannel = interaction.member.voice.channel;
     if (!voiceChannel.permissionsFor(interaction.guild.members.me).has(['Connect', 'Speak'])) {
       return interaction.editReply({
-        embeds: [buildEmbed(client, 'error', `Je n'ai pas les permissions pour rejoindre **${voiceChannel.name}**.`)]
+        embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: `Je n'ai pas les permissions pour rejoindre **${voiceChannel.name}**.` })]
       });
     }
 
     // Créer ou récupérer le player
     let player;
     try {
-      player = await ensurePlayer(interaction, client, interaction.guild.id, voiceChannel, reqId);
+      player = await ensurePlayer(interaction, client, gid, voiceChannel, reqId);
     } catch {
       logWarn(reqId, 'abort:ensurePlayer');
       return;
@@ -325,7 +305,7 @@ module.exports = {
       const result = await loadSoundCloudSet(query, client, interaction.user, reqId);
       if (result.tracks.length === 0) {
         return interaction.editReply({
-          embeds: [buildEmbed(client, 'error', 'Impossible de charger la playlist SoundCloud.')]
+          embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Impossible de charger la playlist SoundCloud.' })]
         });
       }
       for (const track of result.tracks) {
@@ -335,11 +315,16 @@ module.exports = {
         await player.play();
       }
       return interaction.editReply({
-        embeds: [buildEmbed(client, 'queue', `✅ **${result.tracks.length} pistes** ajoutées depuis **${result.name || 'Playlist'}**`)]
+        embeds: [buildEmbed(gid, { 
+          type: 'success', 
+          title: 'Playlist ajoutée', 
+          description: `✅ **${result.tracks.length} pistes** ajoutées depuis **${result.name || 'Playlist'}**`,
+          url: query
+        })]
       });
     }
 
-    // Playlists/Albums Spotify (gérés par LavaSrc)
+    // Playlists/Albums Spotify
     if (SP_PLAYLIST_OR_ALBUM.test(query)) {
       logInfo(reqId, 'detected:SP_PLAYLIST_OR_ALBUM', { query });
       const result = await client.manager.search({ query, requester: interaction.user });
@@ -354,16 +339,21 @@ module.exports = {
         }
         const name = result.playlist?.name || 'Spotify Collection';
         return interaction.editReply({
-          embeds: [buildEmbed(client, 'queue', `✅ **${tracks.length} pistes** ajoutées depuis **${name}**`)]
+          embeds: [buildEmbed(gid, { 
+            type: 'success', 
+            title: 'Playlist Spotify ajoutée', 
+            description: `✅ **${tracks.length} pistes** ajoutées depuis **${name}**`,
+            url: query
+          })]
         });
       }
       
       return interaction.editReply({
-        embeds: [buildEmbed(client, 'error', 'Impossible de charger la playlist/album Spotify.')]
+        embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Impossible de charger la playlist/album Spotify.' })]
       });
     }
 
-    // Playlists/Albums Apple Music (gérés par LavaSrc automatiquement)
+    // Playlists/Albums Apple Music
     if (AM_PLAYLIST.test(query) || AM_ALBUM.test(query)) {
       logInfo(reqId, 'detected:AM_PLAYLIST_OR_ALBUM', { query });
       const result = await client.manager.search({ query, requester: interaction.user });
@@ -378,12 +368,17 @@ module.exports = {
         }
         const name = result.playlist?.name || 'Apple Music Collection';
         return interaction.editReply({
-          embeds: [buildEmbed(client, 'queue', `✅ **${tracks.length} pistes** ajoutées depuis **${name}**`)]
+          embeds: [buildEmbed(gid, { 
+            type: 'success', 
+            title: 'Playlist Apple Music ajoutée', 
+            description: `✅ **${tracks.length} pistes** ajoutées depuis **${name}**`,
+            url: query
+          })]
         });
       }
       
       return interaction.editReply({
-        embeds: [buildEmbed(client, 'error', 'Impossible de charger la playlist/album Apple Music. Vérifie que LavaSrc est configuré avec un token Apple Music valide.')]
+        embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Impossible de charger la playlist/album Apple Music. Vérifie que LavaSrc est configuré avec un token Apple Music valide.' })]
       });
     }
 
@@ -402,11 +397,16 @@ module.exports = {
           await player.play();
         }
         return interaction.editReply({
-          embeds: [buildEmbed(client, 'queue', `✅ Ajouté : **${track.title || 'Piste SoundCloud'}** par **${track.author || 'Artiste inconnu'}**`)]
+          embeds: [buildEmbed(gid, { 
+            type: 'success', 
+            title: 'Ajouté à la file', 
+            description: `✅ **${track.title || 'Piste SoundCloud'}** par **${track.author || 'Artiste inconnu'}**`,
+            url: track.uri || null
+          })]
         });
       }
       return interaction.editReply({
-        embeds: [buildEmbed(client, 'error', 'Piste SoundCloud introuvable.')]
+        embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Piste SoundCloud introuvable.' })]
       });
     }
 
@@ -415,14 +415,12 @@ module.exports = {
       const platform = isSpotifyTrackUrl(query) ? 'Spotify' : 'Apple Music';
       logInfo(reqId, `detected:${platform}_TRACK`, { query });
 
-      // 1) Récupérer métadonnées
       let meta = null;
       if (isSpotifyTrackUrl(query)) {
         meta = await fetchSpotifyOG(query, reqId);
       }
 
       if (!meta || !meta.title || !meta.author) {
-        // Fallback sur le résultat Lavalink
         const fallbackRes = await client.manager.search({ query, requester: interaction.user });
         if (fallbackRes?.tracks?.length > 0) {
           const track = fallbackRes.tracks[0];
@@ -431,29 +429,33 @@ module.exports = {
             await player.play();
           }
           return interaction.editReply({
-            embeds: [buildEmbed(client, 'queue', `✅ Ajouté : **${track.title || 'Piste'}** par **${track.author || 'Artiste inconnu'}**`)]
+            embeds: [buildEmbed(gid, { 
+              type: 'success', 
+              title: 'Ajouté à la file', 
+              description: `✅ **${track.title || 'Piste'}** par **${track.author || 'Artiste inconnu'}**`,
+              url: track.uri || null
+            })]
           });
         }
         return interaction.editReply({
-          embeds: [buildEmbed(client, 'error', `Impossible de charger la piste ${platform}.`)]
+          embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: `Impossible de charger la piste ${platform}.` })]
         });
       }
 
-      // 2) Rechercher le meilleur match sur SoundCloud
       const searchQuery = `${meta.author} ${meta.title}`;
       logInfo(reqId, 'search:SC', { searchQuery });
       const candidates = await scSearch(client, interaction.user, searchQuery, 10, reqId);
 
       if (candidates.length === 0) {
         return interaction.editReply({
-          embeds: [buildEmbed(client, 'error', `Aucun résultat SoundCloud pour **${meta.title}** par **${meta.author}**.`)]
+          embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: `Aucun résultat SoundCloud pour **${meta.title}** par **${meta.author}**.` })]
         });
       }
 
       const bestTrack = pickBestMatch(candidates, meta.title, meta.author, reqId);
       if (!bestTrack || !bestTrack.title) {
         return interaction.editReply({
-          embeds: [buildEmbed(client, 'error', 'Aucune correspondance valide trouvée.')]
+          embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Aucune correspondance valide trouvée.' })]
         });
       }
 
@@ -463,7 +465,12 @@ module.exports = {
       }
 
       return interaction.editReply({
-        embeds: [buildEmbed(client, 'queue', `✅ Ajouté (${platform} → SC) : **${bestTrack.title}** par **${bestTrack.author || 'Artiste inconnu'}**`)]
+        embeds: [buildEmbed(gid, { 
+          type: 'success', 
+          title: 'Ajouté à la file', 
+          description: `✅ **${bestTrack.title}** par **${bestTrack.author || 'Artiste inconnu'}** (${platform} → SC)`,
+          url: bestTrack.uri || null
+        })]
       });
     }
 
@@ -471,22 +478,20 @@ module.exports = {
        RECHERCHE GÉNÉRIQUE
     ============================= */
 
-    // Recherche par défaut sur SoundCloud
     logInfo(reqId, 'search:generic', { query });
     const candidates = await scSearch(client, interaction.user, query, 5, reqId);
 
     if (candidates.length === 0) {
       return interaction.editReply({
-        embeds: [buildEmbed(client, 'error', `Aucun résultat pour **${query}**.`)]
+        embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: `Aucun résultat pour **${query}**.` })]
       });
     }
 
     const track = candidates[0];
     
-    // Validation des données du track
     if (!track || !track.title || track.title.trim() === '') {
       return interaction.editReply({
-        embeds: [buildEmbed(client, 'error', 'Résultat invalide reçu de SoundCloud.')]
+        embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Résultat invalide reçu de SoundCloud.' })]
       });
     }
 
@@ -496,7 +501,12 @@ module.exports = {
     }
 
     return interaction.editReply({
-      embeds: [buildEmbed(client, 'queue', `✅ Ajouté : **${track.title}** par **${track.author || 'Artiste inconnu'}**`)]
+      embeds: [buildEmbed(gid, { 
+        type: 'success', 
+        title: 'Ajouté à la file', 
+        description: `✅ **${track.title}** par **${track.author || 'Artiste inconnu'}**`,
+        url: track.uri || null
+      })]
     });
   }
 };
