@@ -625,7 +625,7 @@ module.exports = {
     if (isUrl(query) && (YT_PLAYLIST.test(query) || SP_PLAYLIST_OR_ALBUM.test(query))) {
       logWarn(reqId, 'reject:playlist', { query });
       return interaction.editReply({
-        embeds: [buildEmbed(gid, { type: 'error', title: 'Playlist non supportÃ©e', description: 'Seules les playlists SoundCloud et Apple Music sont acceptÃ©es.' })]
+        embeds: [buildEmbed(gid, { type: 'error', title: 'Playlist non supportÃ©e', description: 'Seules les playlists SoundCloud sont acceptÃ©es.' })]
       });
     }
 
