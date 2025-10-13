@@ -5,17 +5,16 @@ const { buildEmbed } = require('../utils/embedHelper');
 const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
 
 /* =========================
-   Constantes & DÃ©tection
-   ========================= */
+   Constantes & Détection
+========================= */
 
 const LOG_PREFIX = '[PLAY]';
 const SC_PREFIX = '[SC]';
+
 const SC_SET = /soundcloud\.com\/[^/]+\/sets\/[^/]+/i;
 const SC_TRACK = /soundcloud\.com\/[^/]+\/[^/]+/i;
 const YT_PLAYLIST = /(?:youtu\.be|youtube\.com).*?[?&]list=/i;
 const SP_PLAYLIST_OR_ALBUM = /(?:open\.spotify\.com\/(?:playlist|album)\/|spotify:(?:playlist|album):)/i;
-const AM_PLAYLIST = /music\.apple\.com\/[^/]+\/playlist\//i;
-const AM_ALBUM = /music\.apple\.com\/[^/]+\/album\/[^/]+\/\d+(?:\?|$)/i;
 
 function isUrl(s) { try { new URL(s); return true; } catch { return false; } }
 function isYouTubeUri(uri) { return typeof uri === 'string' && /youtu\.be|youtube\.com/i.test(uri); }
@@ -23,14 +22,13 @@ function isYouTubeUrl(s) { return typeof s === 'string' && /youtu\.be|youtube\.c
 
 function isSpotifyTrackUrl(s) {
   if (typeof s !== 'string') return false;
-  // Support: /track/ID, /intl-fr/track/ID, /fr/track/ID, spotify:track:ID
   return /https?:\/\/open\.spotify\.com\/(?:[a-z-]+\/)?track\/[A-Za-z0-9]+/i.test(s)
     || /^spotify:track:[A-Za-z0-9]+$/i.test(s);
 }
 
 function isAppleMusicTrackUrl(s) {
   if (typeof s !== 'string') return false;
-  // Support: /album/NAME/ID?i=TRACKID ET /song/NAME/TRACKID
+  // Track individuel: /album/NAME/ID?i=TRACKID OU /song/NAME/TRACKID
   return /https?:\/\/music\.apple\.com\/(?:[a-z]{2}\/)?(?:album\/[^\/]+\/\d+\?i=\d+|song\/[^\/]+\/\d+)/i.test(s);
 }
 
@@ -41,19 +39,20 @@ function isAppleMusicPlaylistUrl(s) {
 
 function isAppleMusicAlbumUrl(s) {
   if (typeof s !== 'string') return false;
-  // Album sans ?i= (album complet, pas un track)
+  // Album complet sans ?i= (pas un track individuel)
   return /https?:\/\/music\.apple\.com\/(?:[a-z]{2}\/)?album\/[^\/]+\/\d+(?:\?(?!i=)|$)/i.test(s);
 }
 
 /* =========================
    Logging helpers
-   ========================= */
+========================= */
+
 const logInfo = (id, tag, payload) => console.log(LOG_PREFIX, id, tag, payload || '');
 const logWarn = (id, tag, payload) => console.warn(LOG_PREFIX, id, tag, payload || '');
 
 /* =========================
    Normalisation & scoring
-   ========================= */
+========================= */
 
 function normalize(s) {
   if (!s) return '';
@@ -71,14 +70,13 @@ function stripTitleNoise(title) {
   t = t.replace(/\[.*?\]/g, '');
   t = t.replace(/\b(?:official|audio|video|music|lyric|lyrics|visuali?zer?|mv|hd|hq|4k|remaster(?:ed)?|explicit|clean|radio|edit|extended|version|ft\.?|feat(?:uring)?\.?)\b/ig, '');
   t = t.replace(/\bf[*u]ck(?:ed|ing)?\b/ig, '');
-  t = t.replace(/[_\-â€”â€“Â·]+/g, ' ');
+  t = t.replace(/[_\-—–·]+/g, ' ');
   t = t.split('|')[0];
   return normalize(t);
 }
 
 function stripArtistNoise(artist) {
-  return normalize(artist)
-    .replace(/-\s*topic$/i, '');
+  return normalize(artist).replace(/-\s*topic$/i, '');
 }
 
 function tokenSet(s) {
@@ -110,9 +108,10 @@ function dynamicBoostGeneric(title, author, wantTokens) {
 
 /* =========================
    Recherches SoundCloud
-   ========================= */
+========================= */
+
 async function scSearch(client, requester, q, limit, reqId) {
-  console.log(SC_PREFIX, reqId, 'search', JSON.stringify({ q, limit }), limit);
+  console.log(SC_PREFIX, reqId, 'search', JSON.stringify({ q, limit }));
   const res = await client.manager.search({ query: q, source: 'soundcloud', requester });
   const n = res?.tracks?.length || 0;
   console.log(SC_PREFIX, reqId, 'results', n);
@@ -120,8 +119,8 @@ async function scSearch(client, requester, q, limit, reqId) {
 }
 
 /* =========================
-   MÃ©ta unique (Lavalink + oEmbed YT + OG Spotify + OG Apple Music)
-   ========================= */
+   Métadonnées (OG Tags)
+========================= */
 
 async function fetchYouTubeOEmbed(url, reqId) {
   const o = new URL('https://www.youtube.com/oembed');
@@ -144,8 +143,8 @@ async function fetchSpotifyOG(url, reqId) {
   }
   const html = await resp.text();
   const get = (prop) => {
-    const m = html.match(new RegExp(`<meta property="${prop}" content="([^"]+)"`, 'i'));
-    return m?.[1];
+    const m = html.match(new RegExp(`<meta\\s+property="${prop}"\\s+content="([^"]+)"`, 'i'));
+    return m?.[1] || '';
   };
   const titleTag = html.match(/<title>([^<]+)<\/title>/i)?.[1]?.trim();
   const ogTitle = get('og:title') || titleTag;
@@ -156,10 +155,10 @@ async function fetchSpotifyOG(url, reqId) {
     artist = m[1];
     title = title.replace(/\s*-\s*song(?:\s*and\s*lyrics)?\s*by\s*.+/i, '');
   } else {
-    m = title.match(/\s*Â·\s*(?:single|album|ep)\s*by\s*(.+)/i);
+    m = title.match(/\s*·\s*(?:single|album|ep)\s*by\s*(.+)/i);
     if (m) {
       artist = m[1];
-      title = title.replace(/\s*Â·\s*(?:single|album|ep)\s*by\s*.+/i, '');
+      title = title.replace(/\s*·\s*(?:single|album|ep)\s*by\s*.+/i, '');
     }
   }
   return { title: stripTitleNoise(title), author: stripArtistNoise(artist) };
@@ -168,386 +167,114 @@ async function fetchSpotifyOG(url, reqId) {
 async function fetchAppleMusicOG(url, reqId) {
   logInfo(reqId, 'meta:ogAM:start', { url });
   try {
-    const res = await fetch(url, { 
+    const res = await fetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0' },
       redirect: 'follow'
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const html = await res.text();
     
-    const titleMatch = html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i)
-      || html.match(/<title>([^<]+)<\/title>/i);
-    
+    const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
     if (!titleMatch) {
       logWarn(reqId, 'meta:ogAM:noTitle');
       return null;
     }
-    
+
     let rawTitle = titleMatch[1].trim();
     let title = '';
     let author = '';
-    
+
+    // Format FR: "Titre par Artiste sur Apple Music"
     let match = rawTitle.match(/^(.+?)\s+par\s+(.+?)\s+sur\s+Apple\s+Music$/i);
     if (match) {
       title = match[1].trim();
       author = match[2].trim();
-    }
-    else {
+    } else {
+      // Format EN: "Title by Artist on Apple Music"
       match = rawTitle.match(/^(.+?)\s+by\s+(.+?)\s+on\s+Apple\s+Music$/i);
       if (match) {
         title = match[1].trim();
         author = match[2].trim();
       }
     }
-    
+
+    // Fallback: format "Titre - Artiste"
     if (!title && rawTitle.includes(' - ')) {
       const parts = rawTitle.split(' - ', 2);
       title = parts[0].trim();
       author = parts[1].replace(/\s+sur\s+Apple\s+Music$/i, '').replace(/\s+on\s+Apple\s+Music$/i, '').trim();
     }
-    
+
     if (!title || !author) {
-      const musicTitle = html.match(/<meta\s+name="apple:title"\s+content="([^"]+)"/i);
-      const musicArtist = html.match(/<meta\s+property="music:musician"\s+content="([^"]+)"/i)
-        || html.match(/<meta\s+name="apple:content_artist"\s+content="([^"]+)"/i);
-      
-      if (musicTitle) title = musicTitle[1].trim();
-      if (musicArtist) author = musicArtist[1].trim();
-    }
-    
-    if (!title) {
-      logWarn(reqId, 'meta:ogAM:parsingFailed', { rawTitle });
+      logWarn(reqId, 'meta:ogAM:parseFailed', { rawTitle });
       return null;
     }
-    
-    const meta = {
-      title: stripTitleNoise(title),
-      author: stripArtistNoise(author || 'Unknown Artist')
-    };
-    
-    logInfo(reqId, 'meta:ogAM:found', meta);
-    return meta;
-  }
-  catch (err) {
-    logWarn(reqId, 'meta:ogAM:error', err?.message || String(err));
+
+    logInfo(reqId, 'meta:ogAM:ok', { title, author });
+    return { title: stripTitleNoise(title), author: stripArtistNoise(author) };
+  } catch (err) {
+    logWarn(reqId, 'meta:ogAM:error', { error: err.message });
     return null;
   }
 }
 
-async function fetchAppleMusicAlbumTracks(url, reqId) {
-  logInfo(reqId, 'album:AM:start', { url });
-  try {
-    const res = await fetch(url, { 
-      headers: { 
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7'
-      },
-      redirect: 'follow'
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const html = await res.text();
-    
-    logInfo(reqId, 'album:AM:htmlSize', { size: html.length });
-    
-    const titleMatch = html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i)
-      || html.match(/<title>([^<]+)<\/title>/i);
-    
-    let albumName = 'Album Apple Music';
-    let artistName = '';
-    
-    if (titleMatch) {
-      const rawTitle = titleMatch[1].trim();
-      const match = rawTitle.match(/^(.+?)\s+par\s+(.+?)\s+sur\s+Apple\s+Music$/i)
-        || rawTitle.match(/^(.+?)\s+by\s+(.+?)\s+on\s+Apple\s+Music$/i);
-      if (match) {
-        albumName = match[1].trim();
-        artistName = match[2].trim();
-      }
-    }
-    
-    const tracks = [];
-    const seenTitles = new Set();
-    
-    // Extraire TOUS les tags <script>
-    const scriptMatches = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
-    logInfo(reqId, 'album:AM:scriptsFound', { count: scriptMatches.length });
-    
-    for (let i = 0; i < scriptMatches.length; i++) {
-      const scriptContent = scriptMatches[i][1];
-      
-      // Ignorer les scripts trop courts ou qui ne contiennent pas de JSON
-      if (scriptContent.length < 100 || !scriptContent.includes('{')) continue;
-      
-      // Chercher des patterns JSON dans le script
-      const jsonPatterns = [
-        /(?:window\s*\[\s*["'].*?["']\s*\]|window\.\w+|var\s+\w+|let\s+\w+|const\s+\w+)\s*=\s*({[\s\S]+?});/g,
-        /({[\s\S]+?})/g // Pattern gÃ©nÃ©ral pour capturer n'importe quel objet JSON
-      ];
-      
-      for (const pattern of jsonPatterns) {
-        const matches = [...scriptContent.matchAll(pattern)];
-        
-        for (const match of matches) {
-          try {
-            const jsonStr = match[1];
-            
-            // Filtrer les JSON trop petits
-            if (jsonStr.length < 200) continue;
-            
-            const data = JSON.parse(jsonStr);
-            
-            // Chercher rÃ©cursivement les tracks
-            const findTracks = (obj, depth = 0) => {
-              if (depth > 25 || !obj || typeof obj !== 'object') return;
-              
-              // Pattern 1: obj.type === 'songs' avec attributes
-              if ((obj.type === 'songs' || obj.type === 'song') && obj.attributes?.name) {
-                const title = obj.attributes.name;
-                const artist = obj.attributes.artistName || artistName;
-                if (title && !seenTitles.has(title)) {
-                  seenTitles.add(title);
-                  tracks.push({ title, author: artist });
-                  logInfo(reqId, 'album:AM:track', { num: tracks.length, title });
-                }
-              }
-              
-              // Pattern 2: obj avec name et artistName directement
-              if (obj.name && obj.artistName && typeof obj.name === 'string') {
-                const title = obj.name;
-                const artist = obj.artistName;
-                // VÃ©rifier que c'est bien une chanson (pas l'album)
-                if (title !== albumName && !seenTitles.has(title)) {
-                  seenTitles.add(title);
-                  tracks.push({ title, author: artist });
-                  logInfo(reqId, 'album:AM:track', { num: tracks.length, title });
-                }
-              }
-              
-              // RÃ©cursion sur tous les champs
-              for (const key in obj) {
-                const value = obj[key];
-                if (Array.isArray(value)) {
-                  value.forEach(item => findTracks(item, depth + 1));
-                } else if (value && typeof value === 'object') {
-                  findTracks(value, depth + 1);
-                }
-              }
-            };
-            
-            findTracks(data);
-            
-          } catch (e) {
-            // Pas un JSON valide, continuer
-            continue;
-          }
-        }
-      }
-    }
-    
-    // Si toujours rien, essayer une approche plus agressive avec regex sur le HTML brut
-    if (tracks.length === 0) {
-      logWarn(reqId, 'album:AM:tryingRegexFallback');
-      
-      // Chercher des patterns comme "name":"Physical","artistName":"Dua Lipa"
-      const namePattern = /"name"\s*:\s*"([^"]{2,100}?)"\s*,[\s\S]{0,500}?"artistName"\s*:\s*"([^"]+?)"/g;
-      const matches = [...html.matchAll(namePattern)];
-      
-      logInfo(reqId, 'album:AM:regexMatches', { count: matches.length });
-      
-      for (const match of matches) {
-        const title = match[1];
-        const artist = match[2];
-        
-        // Filtrer les faux positifs (metadata, etc)
-        if (title.length > 1 && title !== albumName && !seenTitles.has(title) && artist.length > 1) {
-          seenTitles.add(title);
-          tracks.push({ title, author: artist });
-          logInfo(reqId, 'album:AM:trackRegex', { num: tracks.length, title, artist });
-        }
-      }
-    }
-    
-    // DÃ©dupliquer et nettoyer
-    const uniqueTracks = [];
-    const finalSeen = new Set();
-    for (const track of tracks) {
-      const key = `${track.title.toLowerCase()}-${track.author.toLowerCase()}`;
-      if (!finalSeen.has(key)) {
-        finalSeen.add(key);
-        uniqueTracks.push(track);
-      }
-    }
-    
-    logInfo(reqId, 'album:AM:final', { 
-      name: albumName, 
-      artist: artistName, 
-      count: uniqueTracks.length 
-    });
-    
-    return { 
-      name: `${albumName}${artistName ? ' - ' + artistName : ''}`, 
-      tracks: uniqueTracks 
-    };
-  }
-  catch (err) {
-    logWarn(reqId, 'album:AM:error', { error: err.message });
-    return null;
-  }
+/* =========================
+   Scoring & Best Match
+========================= */
+
+function scoreSoundCloudTrack(track, wantTitle, wantAuthor, reqId) {
+  const lavaTitle = String(track?.title || '');
+  const lavaAuthor = String(track?.author || '');
+  const cleanTitle = stripTitleNoise(lavaTitle);
+  const cleanAuthor = stripArtistNoise(lavaAuthor);
+  const jTitle = jaccard(cleanTitle, wantTitle);
+  const jAuthor = jaccard(cleanAuthor, wantAuthor);
+  const wantTokens = coreTokens(`${wantTitle} ${wantAuthor}`);
+  const dynBoost = dynamicBoostGeneric(cleanTitle, cleanAuthor, wantTokens);
+  const score = (jTitle * 0.55) + (jAuthor * 0.35) + dynBoost;
+  logInfo(reqId, 'score', { lavaTitle, cleanTitle, cleanAuthor, jTitle: jTitle.toFixed(3), jAuthor: jAuthor.toFixed(3), dynBoost: dynBoost.toFixed(3), score: score.toFixed(3) });
+  return { track, score };
 }
 
-
-
-
-async function getMetaOnce(client, requester, url, reqId) {
-  try {
-    const res = await client.manager.search({ query: url, requester });
-    const t = res?.tracks?.[0];
-    if (t) {
-      const meta = { title: t.title, author: t.author };
-      logInfo(reqId, 'meta:lavalink', meta);
-      return meta;
-    }
-  }
-  catch (e) {
-    logWarn(reqId, 'meta:lavalink:error', e?.message || String(e));
-  }
-
-  if (isYouTubeUrl(url)) {
-    try {
-      const meta = await fetchYouTubeOEmbed(url, reqId);
-      if (meta && (meta.title || meta.author)) {
-        logInfo(reqId, 'meta:oembedYT', meta);
-        return meta;
-      }
-    }
-    catch (e) { logWarn(reqId, 'meta:oembedYT:error', e?.message || String(e)); }
-  }
-
-  if (isSpotifyTrackUrl(url)) {
-    try {
-      const meta = await fetchSpotifyOG(url, reqId);
-      if (meta && (meta.title || meta.author)) {
-        logInfo(reqId, 'meta:ogSP', meta);
-        return meta;
-      }
-    }
-    catch (e) { logWarn(reqId, 'meta:ogSP:error', e?.message || String(e)); }
-  }
-
-  if (isAppleMusicTrackUrl(url)) {
-    try {
-      const meta = await fetchAppleMusicOG(url, reqId);
-      if (meta && (meta.title || meta.author)) {
-        logInfo(reqId, 'meta:ogAM', meta);
-        return meta;
-      }
-    }
-    catch (e) { logWarn(reqId, 'meta:ogAM:error', e?.message || String(e)); }
-  }
-
-  logWarn(reqId, 'meta:none');
-  return null;
+function pickBestMatch(candidates, wantTitle, wantAuthor, reqId) {
+  if (!candidates || candidates.length === 0) return null;
+  const scored = candidates.map(t => scoreSoundCloudTrack(t, wantTitle, wantAuthor, reqId));
+  scored.sort((a, b) => b.score - a.score);
+  logInfo(reqId, 'bestMatch', { top: scored[0].score.toFixed(3) });
+  return scored[0].track;
 }
 
 /* =========================
-   RÃ©solution stricte: URL â†’ mÃ©ta â†’ SC (sinon texte)
-   ========================= */
-async function resolveToSoundCloudTrack(client, requester, urlOrQuery, reqId) {
-  logInfo(reqId, 'resolve:start', { input: urlOrQuery });
-  logInfo(reqId, 'detect', { isURL: isUrl(urlOrQuery), isYT: isYouTubeUrl(urlOrQuery), isSP: isSpotifyTrackUrl(urlOrQuery), isAM: isAppleMusicTrackUrl(urlOrQuery) });
+   Playlists SoundCloud
+========================= */
 
-  const candidates = [];
-  let best = null;
-  let bestScore = 0;
-
-  if (isUrl(urlOrQuery)) {
-    if (isYouTubeUrl(urlOrQuery) || isSpotifyTrackUrl(urlOrQuery) || isAppleMusicTrackUrl(urlOrQuery)) {
-      const meta = await getMetaOnce(client, requester, urlOrQuery, reqId);
-      if (!meta) {
-        logWarn(reqId, 'noMeta:stopForUrl');
-        return null;
-      }
-
-      const artist = stripArtistNoise(meta.author);
-      const title = stripTitleNoise(meta.title);
-      const combos = [`${artist} ${title}`, `${title} ${artist}`, title, artist].filter(Boolean);
-      logInfo(reqId, 'candidates:fromMeta', combos);
-      candidates.push(...combos);
-    }
-    else {
-      logWarn(reqId, 'url:notSupported');
-      return null;
-    }
+async function loadSoundCloudSet(url, client, requester, reqId) {
+  logInfo(reqId, 'SC_SET:load:start', { url });
+  const res = await client.manager.search({ query: url, requester });
+  if (res?.loadType !== 'playlist' || !res.tracks?.length) {
+    logWarn(reqId, 'SC_SET:noTracks');
+    return { tracks: [], name: 'SoundCloud Set' };
   }
-  else {
-    const cleaned = stripTitleNoise(urlOrQuery);
-    if (cleaned) candidates.push(cleaned);
-    logInfo(reqId, 'candidates:text', candidates);
-  }
-
-  if (candidates.length === 0) return null;
-
-  for (const q of candidates) {
-    const wantTokens = coreTokens(q);
-    const tracks = await scSearch(client, requester, q, 10, reqId);
-
-    let i = 0;
-    for (const t of tracks) {
-      const title = t.title;
-      const author = t.author;
-
-      let score = 0.6 * jaccard(title, q) + 0.4 * jaccard(author, q);
-      score += dynamicBoostGeneric(title, author, wantTokens);
-
-      if (/mix|set|live|full album/i.test(title)) score -= 0.08;
-
-      if (score > bestScore) {
-        best = t;
-        bestScore = score;
-      }
-
-      if (i < 3) console.log(SC_PREFIX, reqId, 'score', q, `â†’ "${title}" â€” ${author}`, 'â†’', Number(score.toFixed(3)));
-      i++;
-    }
-    logInfo(reqId, 'candidate:done', { q, bestScore: Number(bestScore.toFixed(3)) });
-    if (best && bestScore > 0.45) break;
-  }
-
-  if (!best) {
-    logWarn(reqId, 'resolve:none');
-    return null;
-  }
-
-  logInfo(reqId, 'resolve:pick', { title: best.title, author: best.author, uri: best.uri, score: Number(bestScore.toFixed(3)) });
-  return best;
+  const name = res.playlist?.name || 'SoundCloud Set';
+  const tracks = res.tracks.filter(t => !isYouTubeUri(t?.uri));
+  logInfo(reqId, 'SC_SET:load:success', { tracks: tracks.length });
+  return { tracks, name };
 }
 
 /* =========================
-   Ajout par lots (sets SC)
-   ========================= */
-async function addInBatches(player, tracks, batchSize, reqId) {
-  let added = 0;
-  for (let i = 0; i < tracks.length; i += batchSize) {
-    const slice = tracks.slice(i, i + batchSize);
-    for (const t of slice) player.queue.add(t);
-    added += slice.length;
-    await new Promise(r => setTimeout(r, 120));
-  }
-  logInfo(reqId, 'batch:added', { added, total: tracks.length });
-  return added;
-}
+   Garde-fou création player
+========================= */
 
-/* =========================
-   Garde-fou crÃ©ation/connexion
-   ========================= */
 async function ensurePlayer(interaction, client, gid, vc, reqId) {
   if (!client.manager || !client.manager.nodes || client.manager.nodes.size === 0) {
-    await interaction.editReply({ embeds: [buildEmbed(gid, { type: 'error', title: 'Serveur audio indisponible', description: 'Ressaie plus tard.' })] });
+    await interaction.editReply({
+      embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Serveur audio indisponible. Ressaie plus tard.' })]
+    });
     throw new Error('No Lavalink nodes connected');
   }
 
   let player = client.manager.players.get(gid);
+  
   if (!player) {
     player = client.manager.createPlayer({
       guildId: gid,
@@ -560,7 +287,9 @@ async function ensurePlayer(interaction, client, gid, vc, reqId) {
   }
 
   if (!player) {
-    await interaction.editReply({ embeds: [buildEmbed(gid, { type: 'error', title: 'CrÃ©ation du lecteur impossible', description: 'Initialisation Ã©chouÃ©e.' })] });
+    await interaction.editReply({
+      embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Création du lecteur impossible.' })]
+    });
     throw new Error('createPlayer returned undefined');
   }
 
@@ -570,7 +299,9 @@ async function ensurePlayer(interaction, client, gid, vc, reqId) {
       await new Promise(r => setTimeout(r, 400));
       logInfo(reqId, 'player:connected', { guildId: gid });
     } catch (e) {
-      await interaction.editReply({ embeds: [buildEmbed(gid, { type: 'error', title: 'Connexion vocale Ã©chouÃ©e', description: 'Impossible de rejoindre le salon.' })] });
+      await interaction.editReply({
+        embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Connexion vocale échouée.' })]
+      });
       throw e;
     }
   }
@@ -579,193 +310,302 @@ async function ensurePlayer(interaction, client, gid, vc, reqId) {
 }
 
 /* =========================
-   Commande slash
-   ========================= */
+   Commande /play
+========================= */
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('play')
-    .setDescription('Lire une musique depuis une recherche ou une URL (lecture SoundCloud)')
-    .addStringOption(o => o.setName('query').setDescription('Recherche ou URL').setRequired(true)),
+    .setDescription('Jouer une piste ou playlist (SoundCloud, Spotify)')
+    .addStringOption(option =>
+      option.setName('query')
+        .setDescription('URL ou recherche')
+        .setRequired(true)
+    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.Connect),
 
   async execute(interaction, client) {
-    const reqId = `${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+    const reqId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const gid = interaction.guild.id;
-    const vc = interaction.member.voice?.channel;
+    logInfo(reqId, 'execute:start', { user: interaction.user.tag, guild: interaction.guild?.name });
 
-    logInfo(reqId, 'cmd:start', { user: interaction.user?.id, guild: gid });
-
-    if (!vc) {
-      return interaction.reply({
-        embeds: [buildEmbed(gid, { type: 'error', title: 'Salon vocal requis', description: 'Rejoins un salon vocal.' })],
-        flags: 1 << 6
-      });
-    }
-
-    const perms = vc.permissionsFor(interaction.client.user);
-    if (!perms?.has(PermissionFlagsBits.Connect) || !perms?.has(PermissionFlagsBits.Speak)) {
-      return interaction.reply({
-        embeds: [buildEmbed(gid, { type: 'error', title: 'Permissions manquantes', description: 'Connect et Speak requis.' })],
-        flags: 1 << 6
-      });
-    }
-
-    const query = interaction.options.getString('query', true);
-    logInfo(reqId, 'input', { query });
     await interaction.deferReply();
+    const query = interaction.options.getString('query', true).trim();
 
+    // Vérifications basiques
+    if (!interaction.member?.voice?.channel) {
+      return interaction.editReply({
+        embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Tu dois être dans un canal vocal.' })]
+      });
+    }
+
+    const voiceChannel = interaction.member.voice.channel;
+    if (!voiceChannel.permissionsFor(interaction.guild.members.me).has(['Connect', 'Speak'])) {
+      return interaction.editReply({
+        embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: `Je n'ai pas les permissions pour rejoindre **${voiceChannel.name}**.` })]
+      });
+    }
+
+    // Créer ou récupérer le player
     let player;
     try {
-      player = await ensurePlayer(interaction, client, gid, vc, reqId);
+      player = await ensurePlayer(interaction, client, gid, voiceChannel, reqId);
     } catch {
       logWarn(reqId, 'abort:ensurePlayer');
       return;
     }
 
-    // Refus playlists YouTube et Spotify
-    if (isUrl(query) && (YT_PLAYLIST.test(query) || SP_PLAYLIST_OR_ALBUM.test(query))) {
-      logWarn(reqId, 'reject:playlist', { query });
+    logInfo(reqId, 'player:ready', { voiceChannel: voiceChannel.name });
+
+    /* =============================
+       BLOQUER PLAYLISTS/ALBUMS APPLE MUSIC
+    ============================= */
+
+    if (isAppleMusicPlaylistUrl(query)) {
+      logWarn(reqId, 'AM:blocked:playlist', { query });
       return interaction.editReply({
-        embeds: [buildEmbed(gid, { type: 'error', title: 'Playlist non supportÃ©e', description: 'Seules les playlists SoundCloud sont acceptÃ©es.' })]
+        embeds: [buildEmbed(gid, { 
+          type: 'error', 
+          title: '⚠️ Playlists Apple Music non supportées', 
+          description: 'Les playlists Apple Music ne sont pas prises en charge. Utilise Spotify ou SoundCloud pour les playlists.' 
+        })]
       });
     }
 
-    // Apple Music Playlist
-    if (isUrl(query) && isAppleMusicPlaylistUrl(query)) {
-      logInfo(reqId, 'playlist:AM', { query });
-      const playlistData = await fetchAppleMusicAlbumTracks(query, reqId);
+    if (isAppleMusicAlbumUrl(query)) {
+      logWarn(reqId, 'AM:blocked:album', { query });
+      return interaction.editReply({
+        embeds: [buildEmbed(gid, { 
+          type: 'error', 
+          title: '⚠️ Albums Apple Music non supportés', 
+          description: 'Les albums Apple Music ne sont pas pris en charge. Utilise Spotify ou SoundCloud pour les albums.' 
+        })]
+      });
+    }
+
+    /* =============================
+       PLAYLISTS / ALBUMS SUPPORTÉS
+    ============================= */
+
+    // Playlists SoundCloud
+    if (SC_SET.test(query)) {
+      logInfo(reqId, 'detected:SC_SET', { query });
+      const result = await loadSoundCloudSet(query, client, interaction.user, reqId);
+      if (result.tracks.length === 0) {
+        return interaction.editReply({
+          embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Impossible de charger la playlist SoundCloud.' })]
+        });
+      }
+      for (const track of result.tracks) {
+        player.queue.add(track);
+      }
+      if (!player.playing && !player.paused) {
+        await player.play();
+      }
+      return interaction.editReply({
+        embeds: [buildEmbed(gid, { 
+          type: 'success', 
+          title: 'Playlist ajoutée', 
+          description: `✅ **${result.tracks.length} pistes** ajoutées depuis **${result.name || 'Playlist'}**`,
+          url: query
+        })]
+      });
+    }
+
+    // Playlists/Albums Spotify
+    if (SP_PLAYLIST_OR_ALBUM.test(query)) {
+      logInfo(reqId, 'detected:SP_PLAYLIST_OR_ALBUM', { query });
+      const result = await client.manager.search({ query, requester: interaction.user });
       
-      if (!playlistData || playlistData.tracks.length === 0) {
+      if (result?.loadType === 'playlist' && result.tracks?.length > 0) {
+        const tracks = result.tracks.filter(t => !isYouTubeUri(t?.uri));
+        for (const track of tracks) {
+          player.queue.add(track);
+        }
+        if (!player.playing && !player.paused) {
+          await player.play();
+        }
+        const name = result.playlist?.name || 'Spotify Collection';
         return interaction.editReply({
-          embeds: [buildEmbed(gid, { type: 'error', title: 'Playlist introuvable', description: 'Impossible de rÃ©cupÃ©rer les tracks de cette playlist.' })]
+          embeds: [buildEmbed(gid, { 
+            type: 'success', 
+            title: 'Playlist Spotify ajoutée', 
+            description: `✅ **${tracks.length} pistes** ajoutées depuis **${name}**`,
+            url: query
+          })]
         });
       }
-
-      let added = 0;
-      for (const meta of playlistData.tracks) {
-        const scTrack = await resolveToSoundCloudTrack(client, interaction.user, `${meta.author} ${meta.title}`, reqId);
-        if (scTrack && !isYouTubeUri(scTrack.uri)) {
-          player.queue.add(scTrack);
-          added++;
-        }
-        if (added >= 50) break;
-      }
-
-      if (!player.playing) player.play();
-
-      logInfo(reqId, 'playlist:AM:added', { name: playlistData.name, added });
-      return interaction.editReply({
-        embeds: [buildEmbed(gid, { type: 'success', title: 'Playlist Apple Music ajoutÃ©e', description: `**${playlistData.name}**\n${added} pistes ajoutÃ©es sur ${playlistData.tracks.length}.`, url: query })]
-      });
-    }
-
-    // Apple Music Album
-    if (isUrl(query) && isAppleMusicAlbumUrl(query)) {
-      logInfo(reqId, 'album:AM', { query });
-      const albumData = await fetchAppleMusicAlbumTracks(query, reqId);
       
-      if (!albumData || albumData.tracks.length === 0) {
-        return interaction.editReply({
-          embeds: [buildEmbed(gid, { type: 'error', title: 'Album introuvable', description: 'Impossible de rÃ©cupÃ©rer les tracks de cet album.' })]
-        });
-      }
+      return interaction.editReply({
+        embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Impossible de charger la playlist/album Spotify.' })]
+      });
+    }
 
-      let added = 0;
-      for (const meta of albumData.tracks) {
-        const scTrack = await resolveToSoundCloudTrack(client, interaction.user, `${meta.author} ${meta.title}`, reqId);
-        if (scTrack && !isYouTubeUri(scTrack.uri)) {
-          player.queue.add(scTrack);
-          added++;
+    /* =============================
+       PISTES INDIVIDUELLES
+    ============================= */
+
+    // URL directe SoundCloud
+    if (SC_TRACK.test(query) && !SC_SET.test(query)) {
+      logInfo(reqId, 'detected:SC_TRACK', { query });
+      const res = await client.manager.search({ query, requester: interaction.user });
+      if (res?.tracks?.length > 0) {
+        const track = res.tracks[0];
+        player.queue.add(track);
+        if (!player.playing && !player.paused) {
+          await player.play();
         }
+        return interaction.editReply({
+          embeds: [buildEmbed(gid, { 
+            type: 'success', 
+            title: 'Ajouté à la file', 
+            description: `✅ **${track.title || 'Piste SoundCloud'}** par **${track.author || 'Artiste inconnu'}**`,
+            url: track.uri || null
+          })]
+        });
       }
-
-      if (!player.playing) player.play();
-
-      logInfo(reqId, 'album:AM:added', { name: albumData.name, added });
       return interaction.editReply({
-        embeds: [buildEmbed(gid, { type: 'success', title: 'Album Apple Music ajoutÃ©', description: `**${albumData.name}**\n${added} pistes ajoutÃ©es sur ${albumData.tracks.length}.`, url: query })]
+        embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Piste SoundCloud introuvable.' })]
       });
     }
 
-    // SC set
-    if (isUrl(query) && SC_SET.test(query)) {
-      logInfo(reqId, 'set:sc', { query });
-      const res = await client.manager.search({ query, requester: interaction.user });
-      const count = res?.tracks?.length || 0;
-      logInfo(reqId, 'set:found', { count });
+    // URL Spotify track
+    if (isSpotifyTrackUrl(query)) {
+      logInfo(reqId, 'detected:SPOTIFY_TRACK', { query });
 
-      if (!count) {
+      let meta = await fetchSpotifyOG(query, reqId);
+
+      if (!meta || !meta.title || !meta.author) {
+        const fallbackRes = await client.manager.search({ query, requester: interaction.user });
+        if (fallbackRes?.tracks?.length > 0) {
+          const track = fallbackRes.tracks[0];
+          player.queue.add(track);
+          if (!player.playing && !player.paused) {
+            await player.play();
+          }
+          return interaction.editReply({
+            embeds: [buildEmbed(gid, { 
+              type: 'success', 
+              title: 'Ajouté à la file', 
+              description: `✅ **${track.title || 'Piste'}** par **${track.author || 'Artiste inconnu'}**`,
+              url: track.uri || null
+            })]
+          });
+        }
         return interaction.editReply({
-          embeds: [buildEmbed(gid, { type: 'error', title: 'Aucun rÃ©sultat', description: 'Set SoundCloud introuvable.' })]
+          embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Impossible de charger la piste Spotify.' })]
         });
       }
 
-      const isPlaylist = (typeof res.loadType === 'string' && res.loadType.toLowerCase().includes('playlist')) || (res.tracks?.length > 1 && res.playlistInfo);
-      const tracks = (isPlaylist ? res.tracks : [res.tracks[0]]).filter(t => !isYouTubeUri(t?.uri));
-      const added = await addInBatches(player, tracks, 25, reqId);
+      const searchQuery = `${meta.author} ${meta.title}`;
+      logInfo(reqId, 'search:SC', { searchQuery });
+      const candidates = await scSearch(client, interaction.user, searchQuery, 10, reqId);
 
-      if (!player.playing) player.play();
-
-      const title = res.playlistInfo?.name || 'Set SoundCloud';
-      logInfo(reqId, 'queue:set:added', { added, title });
-      return interaction.editReply({
-        embeds: [buildEmbed(gid, { type: 'success', title: 'Playlist ajoutÃ©e', description: `**${title}**\n${added} pistes ajoutÃ©es.`, url: query })]
-      });
-    }
-
-    // SC track direct
-    if (isUrl(query) && SC_TRACK.test(query)) {
-      logInfo(reqId, 'track:sc', { query });
-      const res = await client.manager.search({ query, requester: interaction.user });
-      const count = res?.tracks?.length || 0;
-      logInfo(reqId, 'track:sc:found', { count });
-
-      if (!count) {
+      if (candidates.length === 0) {
         return interaction.editReply({
-          embeds: [buildEmbed(gid, { type: 'error', title: 'Introuvable', description: 'Piste SoundCloud non trouvÃ©e.' })]
+          embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: `Aucun résultat SoundCloud pour **${meta.title}** par **${meta.author}**.` })]
         });
       }
 
-      const track = res.tracks[0];
-      if (isYouTubeUri(track?.uri)) {
-        logWarn(reqId, 'guard:youtubeTrackBlocked', { uri: track.uri });
+      const bestTrack = pickBestMatch(candidates, meta.title, meta.author, reqId);
+      if (!bestTrack || !bestTrack.title) {
         return interaction.editReply({
-          embeds: [buildEmbed(gid, { type: 'error', title: 'RÃ©solution incorrecte', description: 'La recherche a renvoyÃ© une source YouTube bloquÃ©e, ressaie.' })]
+          embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Aucune correspondance valide trouvée.' })]
         });
       }
 
-      const wasPlaying = player.playing;
-      player.queue.add(track);
-      if (!wasPlaying) player.play();
+      player.queue.add(bestTrack);
+      if (!player.playing && !player.paused) {
+        await player.play();
+      }
 
-      logInfo(reqId, 'queue:add:sc', { title: track.title, author: track.author });
       return interaction.editReply({
-        embeds: [buildEmbed(gid, { type: 'success', title: 'AjoutÃ© Ã  la file', description: track.title, url: track.uri || null })]
+        embeds: [buildEmbed(gid, { 
+          type: 'success', 
+          title: 'Ajouté à la file', 
+          description: `✅ **${bestTrack.title}** par **${bestTrack.author || 'Artiste inconnu'}** (Spotify → SC)`,
+          url: bestTrack.uri || null
+        })]
       });
     }
 
-    // Rebond strict: URL (YT/SP/AM) â†’ mÃ©ta â†’ SC, sinon texte utilisateur
-    const scTrack = await resolveToSoundCloudTrack(client, interaction.user, query, reqId);
-    if (!scTrack) {
-      logWarn(reqId, 'resolve:none', { query });
+    // URL Apple Music track (track individuel uniquement)
+    if (isAppleMusicTrackUrl(query)) {
+      logInfo(reqId, 'detected:APPLEMUSIC_TRACK', { query });
+
+      let meta = await fetchAppleMusicOG(query, reqId);
+
+      if (!meta || !meta.title || !meta.author) {
+        return interaction.editReply({
+          embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Impossible d\'extraire les métadonnées Apple Music.' })]
+        });
+      }
+
+      const searchQuery = `${meta.author} ${meta.title}`;
+      logInfo(reqId, 'search:SC', { searchQuery });
+      const candidates = await scSearch(client, interaction.user, searchQuery, 10, reqId);
+
+      if (candidates.length === 0) {
+        return interaction.editReply({
+          embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: `Aucun résultat SoundCloud pour **${meta.title}** par **${meta.author}**.` })]
+        });
+      }
+
+      const bestTrack = pickBestMatch(candidates, meta.title, meta.author, reqId);
+      if (!bestTrack || !bestTrack.title) {
+        return interaction.editReply({
+          embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Aucune correspondance valide trouvée.' })]
+        });
+      }
+
+      player.queue.add(bestTrack);
+      if (!player.playing && !player.paused) {
+        await player.play();
+      }
+
       return interaction.editReply({
-        embeds: [buildEmbed(gid, { type: 'error', title: 'Aucun rÃ©sultat', description: 'Aucune piste SoundCloud pertinente trouvÃ©e.' })]
+        embeds: [buildEmbed(gid, { 
+          type: 'success', 
+          title: 'Ajouté à la file', 
+          description: `✅ **${bestTrack.title}** par **${bestTrack.author || 'Artiste inconnu'}** (Apple Music → SC)`,
+          url: bestTrack.uri || null
+        })]
       });
     }
 
-    if (isYouTubeUri(scTrack?.uri)) {
-      logWarn(reqId, 'guard:youtubeTrackBlocked', { uri: scTrack.uri });
+    /* =============================
+       RECHERCHE GÉNÉRIQUE
+    ============================= */
+
+    logInfo(reqId, 'search:generic', { query });
+    const candidates = await scSearch(client, interaction.user, query, 5, reqId);
+
+    if (candidates.length === 0) {
       return interaction.editReply({
-        embeds: [buildEmbed(gid, { type: 'error', title: 'RÃ©solution incorrecte', description: 'La recherche a renvoyÃ© une source YouTube bloquÃ©e, ressaie.' })]
+        embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: `Aucun résultat pour **${query}**.` })]
       });
     }
 
-    const wasPlaying = player.playing;
-    player.queue.add(scTrack);
-    if (!wasPlaying) player.play();
+    const track = candidates[0];
+    
+    if (!track || !track.title || track.title.trim() === '') {
+      return interaction.editReply({
+        embeds: [buildEmbed(gid, { type: 'error', title: 'Erreur', description: 'Résultat invalide reçu de SoundCloud.' })]
+      });
+    }
 
-    logInfo(reqId, 'queue:add', { title: scTrack.title, author: scTrack.author, uri: scTrack.uri });
+    player.queue.add(track);
+    if (!player.playing && !player.paused) {
+      await player.play();
+    }
+
     return interaction.editReply({
-      embeds: [buildEmbed(gid, { type: 'success', title: 'AjoutÃ© Ã  la file', description: scTrack.title, url: scTrack.uri || null })]
+      embeds: [buildEmbed(gid, { 
+        type: 'success', 
+        title: 'Ajouté à la file', 
+        description: `✅ **${track.title}** par **${track.author || 'Artiste inconnu'}**`,
+        url: track.uri || null
+      })]
     });
   }
 };

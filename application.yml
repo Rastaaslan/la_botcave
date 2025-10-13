@@ -1,57 +1,42 @@
 ﻿server:
-  # En prod Railway, préfère ${PORT:2333}
   port: ${PORT:2333}
   address: 0.0.0.0
 
 lavalink:
   plugins:
-    # Garde Lavasrc si tu veux des résolutions Spotify -> SC/YT
     - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.1"
       repository: "https://maven.lavalink.dev/releases"
-    # SUPPRIME (temporairement) le plugin YouTube si tu ne veux aucun chargement YT
-    # - dependency: "dev.lavalink.youtube:youtube-plugin:1.14.0"
 
   server:
     password: "${LAVALINK_PASSWORD:youshallnotpass}"
     sources:
-      youtube: false         # Désactive la source YT legacy
+      youtube: false
       bandcamp: false
-      soundcloud: true       # Lecture SoundCloud active
+      soundcloud: true
       twitch: false
       vimeo: false
       http: false
       local: false
 
 plugins:
-  # Supprimer/neutraliser entièrement la section youtube
-  # youtube:
-  #   enabled: false
-  #   allowSearch: false
-  #   allowDirectVideoIds: false
-  #   allowDirectPlaylistIds: false
-
   lavasrc:
+    providers:
+      - "scsearch:%ISRC%"      # Cherche d'abord avec ISRC (plus précis)
+      - "scsearch:%QUERY%"     # Puis avec query standard
+    
     sources:
       spotify: true
-      applemusic: true
+      applemusic: false        # ← DÉSACTIVÉ (playlists/albums non supportés)
       deezer: false
       yandexmusic: false
-      youtube: false        # Empêche Lavasrc d'utiliser YouTube comme sortie
+      youtube: false
+    
     spotify:
       clientId: "${SPOTIFY_CLIENT_ID}"
       clientSecret: "${SPOTIFY_CLIENT_SECRET}"
       countryCode: "FR"
-      playlistLoadLimit: 6
-      albumLoadLimit: 6
-    applemusic:
-      countryCode: "FR"
-      mediaAPIToken: "${APPLE_MUSIC_TOKEN}"  # Token à récupérer
-      playlistLoadLimit: 6
-      albumLoadLimit: 6
-    providers:
-      - "scsearch:%QUERY%"  # SoundCloud en premier
-      # Optionnel: retire ytsearch si tu veux bannir toute dépendance YT
-      # - "ytsearch:%QUERY%"
+      playlistLoadLimit: 6     # Max 6 playlists en parallèle
+      albumLoadLimit: 6        # Max 6 albums en parallèle
 
 metrics:
   prometheus:
