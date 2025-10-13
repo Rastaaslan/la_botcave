@@ -33,7 +33,7 @@ plugins:
   lavasrc:
     sources:
       spotify: true
-      applemusic: false
+      applemusic: true
       deezer: false
       yandexmusic: false
       youtube: false        # Empêche Lavasrc d'utiliser YouTube comme sortie
@@ -41,6 +41,11 @@ plugins:
       clientId: "${SPOTIFY_CLIENT_ID}"
       clientSecret: "${SPOTIFY_CLIENT_SECRET}"
       countryCode: "FR"
+      playlistLoadLimit: 6
+      albumLoadLimit: 6
+    applemusic:
+      countryCode: "FR"
+      mediaAPIToken: "${APPLE_MUSIC_TOKEN}"  # Token à récupérer
       playlistLoadLimit: 6
       albumLoadLimit: 6
     providers:
