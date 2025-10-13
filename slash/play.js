@@ -221,6 +221,55 @@ async function loadSoundCloudSet(url, client, requester, reqId) {
 }
 
 /* =========================
+   Garde-fou création player
+========================= */
+
+async function ensurePlayer(interaction, client, gid, vc, reqId) {
+  if (!client.manager || !client.manager.nodes || client.manager.nodes.size === 0) {
+    await interaction.editReply({
+      embeds: [buildEmbed(client, 'error', 'Serveur audio indisponible. Ressaie plus tard.')]
+    });
+    throw new Error('No Lavalink nodes connected');
+  }
+
+  let player = client.manager.players.get(gid);
+  
+  if (!player) {
+    // CORRECTION: Utiliser createPlayer au lieu de create
+    player = client.manager.createPlayer({
+      guildId: gid,
+      voiceChannelId: vc.id,
+      textChannelId: interaction.channel.id,
+      autoPlay: true,
+      volume: 35
+    });
+    logInfo(reqId, 'player:create', { guildId: gid, vc: vc.id });
+  }
+
+  if (!player) {
+    await interaction.editReply({
+      embeds: [buildEmbed(client, 'error', 'Création du lecteur impossible.')]
+    });
+    throw new Error('createPlayer returned undefined');
+  }
+
+  if (!player.connected) {
+    try {
+      await player.connect({ setDeaf: true, setMute: false });
+      await new Promise(r => setTimeout(r, 400));
+      logInfo(reqId, 'player:connected', { guildId: gid });
+    } catch (e) {
+      await interaction.editReply({
+        embeds: [buildEmbed(client, 'error', 'Connexion vocale échouée.')]
+      });
+      throw e;
+    }
+  }
+
+  return player;
+}
+
+/* =========================
    Commande /play
 ========================= */
 
@@ -257,18 +306,12 @@ module.exports = {
     }
 
     // Créer ou récupérer le player
-    let player = client.manager.players.get(interaction.guild.id);
-    if (!player) {
-      player = client.manager.create({
-        guild: interaction.guild.id,
-        voiceChannel: voiceChannel.id,
-        textChannel: interaction.channel.id,
-        selfDeafen: true
-      });
-    }
-
-    if (player.state !== 'CONNECTED') {
-      player.connect();
+    let player;
+    try {
+      player = await ensurePlayer(interaction, client, interaction.guild.id, voiceChannel, reqId);
+    } catch {
+      logWarn(reqId, 'abort:ensurePlayer');
+      return;
     }
 
     logInfo(reqId, 'player:ready', { voiceChannel: voiceChannel.name });
