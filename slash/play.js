@@ -435,11 +435,10 @@ module.exports = {
       let player = client.manager.players.get(interaction.guildId);
 
       if (!player) {
-        player = client.manager.create({
+        player = client.manager.players.create({
           guildId: interaction.guildId,
-          voiceChannel: voiceChannel.id,
-          textChannel: interaction.channelId,
-          selfDeafen: true,
+          voiceChannelId: voiceChannel.id,  // Attention: voiceChannelId, pas voiceChannel
+          textChannelId: interaction.channelId,  // textChannelId, pas textChannel
           volume: 50
         });
       }
