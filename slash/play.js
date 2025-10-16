@@ -13,6 +13,15 @@ const SC_TRACK = /soundcloud\.com\/[^/]+\/[^/]+/i;
 const YT_PLAYLIST = /(?:youtu\.be|youtube\.com).*?[?&]list=/i;
 const SP_PLAYLIST_OR_ALBUM = /(?:open\.spotify\.com\/(?:playlist|album)\/|spotify:(?:playlist|album):)/i;
 
+/* ========================= 
+   Configuration Spotify API
+========================= */
+const SPOTIFY_CLIENT_ID = process.env.SPOTIFY_CLIENT_ID || '';
+const SPOTIFY_CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET || '';
+
+let spotifyAccessToken = null;
+let tokenExpiry = 0;
+
 function isUrl(s) {
   try { new URL(s); return true; } catch { return false; }
 }
@@ -206,6 +215,41 @@ async function fetchAppleMusicOG(url, reqId) {
 }
 
 /* ========================= 
+   Spotify API Token 
+========================= */
+async function getSpotifyAccessToken() {
+  // Réutiliser le token s'il est encore valide
+  if (spotifyAccessToken && Date.now() < tokenExpiry) {
+    return spotifyAccessToken;
+  }
+
+  if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET) {
+    throw new Error('Spotify credentials not configured');
+  }
+
+  const auth = Buffer.from(`${SPOTIFY_CLIENT_ID}:${SPOTIFY_CLIENT_SECRET}`).toString('base64');
+  
+  const resp = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Basic ${auth}`,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: 'grant_type=client_credentials'
+  });
+  
+  if (!resp.ok) {
+    throw new Error(`Spotify Auth failed: ${resp.status}`);
+  }
+  
+  const data = await resp.json();
+  spotifyAccessToken = data.access_token;
+  tokenExpiry = Date.now() + (data.expires_in * 1000) - 60000; // -1 minute de sécurité
+  
+  return spotifyAccessToken;
+}
+
+/* ========================= 
    Extraction playlists YouTube 
 ========================= */
 async function extractYouTubePlaylistTracks(url, reqId) {
@@ -279,86 +323,78 @@ function extractYouTubePlaylistId(url) {
 }
 
 /* ========================= 
-   Extraction playlists Spotify 
+   Extraction playlists Spotify via API
 ========================= */
 async function extractSpotifyPlaylistTracks(url, reqId) {
   logInfo(reqId, 'spPlaylist:start', { url });
   try {
+    // Extraction de l'ID
     const match = url.match(/(?:playlist|album)\/([A-Za-z0-9]+)/);
     if (!match) {
       logWarn(reqId, 'spPlaylist:noId');
       return [];
     }
 
+    const id = match[1];
     const type = url.includes('/playlist/') ? 'playlist' : 'album';
     
-    const resp = await fetch(url, { 
-      headers: { 
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 
-        'Accept': 'text/html,application/xhtml+xml',
-        'Accept-Language': 'en-US,en;q=0.9',
-      } 
-    });
-
-    if (!resp.ok) {
-      logWarn(reqId, 'spPlaylist:httpError', { status: resp.status });
-      return [];
+    // Récupération du token
+    const token = await getSpotifyAccessToken();
+    
+    // Construction de l'endpoint selon le type
+    let endpoint;
+    if (type === 'playlist') {
+      endpoint = `https://api.spotify.com/v1/playlists/${id}/tracks?limit=100`;
+    } else {
+      endpoint = `https://api.spotify.com/v1/albums/${id}/tracks?limit=50`;
     }
-
-    const html = await resp.text();
+    
     const tracks = [];
+    let nextUrl = endpoint;
     
-    // Regex pour extraire les tracks du HTML
-    const trackPattern = /"name":"([^"]+)","artists":\[({[^}]+}(?:,{[^}]+})*)\]/g;
-    let match2;
-    
-    while ((match2 = trackPattern.exec(html)) !== null) {
-      const title = match2[1];
-      const artistsJson = `[${match2[2]}]`;
+    // Pagination pour récupérer tous les morceaux
+    while (nextUrl) {
+      const resp = await fetch(nextUrl, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json'
+        }
+      });
       
-      try {
-        const artistsData = JSON.parse(artistsJson);
-        const artists = artistsData.map(a => a.name).join(', ');
+      if (!resp.ok) {
+        logWarn(reqId, 'spPlaylist:httpError', { status: resp.status });
+        break;
+      }
+      
+      const data = await resp.json();
+      
+      // Traitement des items
+      for (const item of data.items || []) {
+        const track = item.track || item;
+        
+        // Ignorer les tracks null (supprimées)
+        if (!track || !track.name) continue;
+        
+        const title = track.name;
+        const artists = track.artists?.map(a => a.name).join(', ') || '';
         
         tracks.push({
           title: stripTitleNoise(title),
           author: stripArtistNoise(artists),
           query: `${artists} ${title}`.trim()
         });
-      } catch (e) {
-        logWarn(reqId, 'spPlaylist:parseTrack', { error: String(e) });
       }
+      
+      // Pagination
+      nextUrl = data.next;
     }
-
-    // Fallback : chercher les données JSON-LD
-    if (tracks.length === 0) {
-      const scriptMatch = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>(\{[^<]+\})<\/script>/);
-      if (scriptMatch) {
-        try {
-          const jsonData = JSON.parse(scriptMatch[1]);
-          const trackList = jsonData?.track?.itemListElement || [];
-          
-          for (const item of trackList) {
-            const track = item?.item;
-            if (track?.name) {
-              tracks.push({
-                title: stripTitleNoise(track.name),
-                author: stripArtistNoise(track?.byArtist?.name || ''),
-                query: `${track?.byArtist?.name || ''} ${track.name}`.trim()
-              });
-            }
-          }
-        } catch (e) {
-          logWarn(reqId, 'spPlaylist:parseJSON', { error: String(e) });
-        }
-      }
-    }
-
+    
     logInfo(reqId, 'spPlaylist:extracted', { count: tracks.length });
     return tracks;
     
   } catch (err) {
     logWarn(reqId, 'spPlaylist:error', String(err));
+    console.error('[DEBUG] Spotify API error:', err);
     return [];
   }
 }
