@@ -800,10 +800,9 @@ module.exports = {
         const meta = await fetchSpotifyOG(query, reqId);
         
         if (meta && meta.title) {
-          // Construction de plusieurs requêtes de recherche
           const queries = [];
           
-          // Query 1 : Artiste + Titre avec guillemets (si artiste présent)
+          // Query 1 : Artiste + Titre (si artiste présent)
           if (meta.author) {
             queries.push(`"${meta.author}" "${meta.title}"`);
             queries.push(`${meta.author} ${meta.title}`);
@@ -819,54 +818,73 @@ module.exports = {
           let bestResult = null;
           let bestScore = 0;
           
-          // Essayer chaque query
           for (const searchQuery of queries) {
             const scResults = await scSearch(client, interaction.user, searchQuery, 10, reqId);
             
             if (!scResults || scResults.length === 0) continue;
             
-            // Scorer chaque résultat
             for (const result of scResults) {
               const resultTitle = result.title || '';
               const resultAuthor = result.author || '';
               
-              // Calcul du score
               let score = 0;
               
-              // 1. Score de titre (très important)
+              // 1. Score de titre exact (priorité maximale)
               const titleScore = jaccard(meta.title, resultTitle);
-              score += titleScore * 0.5;
               
-              // 2. Score d'artiste (crucial si présent)
+              // Bonus si le titre est très proche (>70%)
+              if (titleScore >= 0.7) {
+                score += 0.5;
+              } else {
+                score += titleScore * 0.4;
+              }
+              
+              // 2. Vérification des tokens du titre (critique)
+              const titleTokens = coreTokens(meta.title);
+              const resultTitleTokens = tokenSet(resultTitle);
+              const resultAuthorTokens = tokenSet(resultAuthor);
+              const resultFullTokens = new Set([...resultTitleTokens, ...resultAuthorTokens]);
+              
+              const tokensInResult = titleTokens.filter(t => resultFullTokens.has(t)).length;
+              const tokenRatio = titleTokens.length > 0 ? tokensInResult / titleTokens.length : 0;
+              
+              // Si moins de 70% des tokens du titre sont présents, pénalité sévère
+              if (tokenRatio < 0.7) {
+                score *= 0.3;
+                logInfo(reqId, 'spTrack:lowTokens', {
+                  result: `${resultAuthor} - ${resultTitle}`,
+                  tokenRatio: tokenRatio.toFixed(2),
+                  penalized: true
+                });
+              } else {
+                score += tokenRatio * 0.2;
+              }
+              
+              // 3. Score d'artiste (si présent dans meta)
               if (meta.author) {
                 const authorScore = jaccard(meta.author, resultAuthor);
-                score += authorScore * 0.3;
-                
-                // Bonus MAJEUR si l'artiste exact apparaît
                 const normalizedAuthor = normalize(meta.author);
                 const normalizedResultAuthor = normalize(resultAuthor);
                 const normalizedResultTitle = normalize(resultTitle);
                 
-                // Bonus si l'artiste est dans l'auteur
-                if (normalizedResultAuthor.includes(normalizedAuthor) || normalizedAuthor.includes(normalizedResultAuthor)) {
-                  score += 0.3;
-                }
+                // Vérifier si l'artiste apparaît quelque part
+                const artistInAuthor = normalizedResultAuthor.includes(normalizedAuthor) || 
+                                      normalizedAuthor.includes(normalizedResultAuthor);
+                const artistInTitle = normalizedResultTitle.includes(normalizedAuthor);
                 
-                // Bonus si l'artiste est dans le titre
-                if (normalizedResultTitle.includes(normalizedAuthor)) {
-                  score += 0.15;
+                if (artistInAuthor) {
+                  score += 0.4; // Bonus majeur
+                } else if (artistInTitle) {
+                  score += 0.2; // Bonus moyen
+                } else {
+                  score += authorScore * 0.1; // Score minimal
                 }
               }
               
-              // 3. Vérifier que les mots clés du titre sont présents
-              const titleTokens = coreTokens(meta.title);
-              const resultTokens = tokenSet(`${resultTitle} ${resultAuthor}`);
-              const overlap = titleTokens.filter(t => resultTokens.has(t)).length;
-              const tokenRatio = titleTokens.length > 0 ? overlap / titleTokens.length : 0;
-              
-              // Pénalité si moins de 80% des tokens du titre sont présents
-              if (tokenRatio < 0.8) {
-                score *= 0.7;
+              // 4. Bonus pour les correspondances exactes de mots
+              const exactMatches = titleTokens.filter(t => resultTitleTokens.has(t)).length;
+              if (exactMatches === titleTokens.length && titleTokens.length > 0) {
+                score += 0.15; // Tous les mots du titre sont présents
               }
               
               logInfo(reqId, 'spTrack:score', {
@@ -883,8 +901,11 @@ module.exports = {
             }
           }
           
-          // Seuil de confiance ajusté
-          const threshold = meta.author ? 0.5 : 0.4;
+          // Seuil adaptatif basé sur la présence de l'artiste
+          let threshold = 0.4;
+          if (meta.author) {
+            threshold = 0.55; // Plus strict si on a l'artiste
+          }
           
           if (bestResult && bestScore >= threshold) {
             player.queue.add(bestResult);
@@ -900,6 +921,21 @@ module.exports = {
             });
           }
           
+          // Si le score est faible mais qu'on a un résultat, proposer quand même
+          if (bestResult && bestScore >= 0.35) {
+            player.queue.add(bestResult);
+            if (!player.playing && !player.paused) {
+              player.play();
+            }
+            return interaction.editReply({
+              embeds: [buildEmbed(gid, {
+                type: 'warning',
+                title: 'Piste potentielle ajoutée',
+                description: `**${bestResult.title}**\npar ${bestResult.author}\n\n⚠️ *Correspondance moyenne: ${(bestScore * 100).toFixed(0)}%*\nCe n'est peut-être pas la bonne version.`
+              })]
+            });
+          }
+          
           logWarn(reqId, 'spTrack:lowConfidence', { 
             bestScore: bestScore.toFixed(2),
             threshold,
@@ -911,8 +947,8 @@ module.exports = {
         return interaction.editReply({
           embeds: [buildEmbed(gid, {
             type: 'error',
-            title: 'Erreur',
-            description: 'Piste Spotify non trouvée sur SoundCloud.\nEssayez avec une recherche directe du titre.'
+            title: 'Piste introuvable',
+            description: `Impossible de trouver une correspondance fiable sur SoundCloud pour :\n**${meta?.title || 'Titre inconnu'}**${meta?.author ? `\npar ${meta.author}` : ''}\n\nEssayez une recherche directe.`
           })]
         });
       }
