@@ -153,40 +153,103 @@ async function fetchYouTubeOEmbed(url, reqId) {
 }
 
 async function fetchSpotifyOG(url, reqId) {
+  logInfo(reqId, 'ogSP:start', { url });
+  
   const resp = await fetch(url, { 
     headers: { 
-      'User-Agent': 'Mozilla/5.0', 
-      'Accept': 'text/html,application/xhtml+xml' 
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 
+      'Accept': 'text/html,application/xhtml+xml',
+      'Accept-Language': 'en-US,en;q=0.9'
     } 
   });
+  
   if (!resp.ok) {
     logWarn(reqId, 'ogSP:http', { status: resp.status });
     return null;
   }
+  
   const html = await resp.text();
+  
+  // Méthode 1 : Extraire depuis les meta tags og:
   const get = (prop) => {
     const m = html.match(new RegExp(`<meta\\s+property="${prop}"\\s+content="([^"]*)"`, 'i'));
     return m?.[1] || '';
   };
-  const titleTag = html.match(/<title>([^<]+)<\/title>/i)?.[1]?.trim();
-  const ogTitle = get('og:title') || titleTag;
-  let title = ogTitle.replace(/\s*-\s*Spotify$/i, '');
+  
+  const ogTitle = get('og:title');
+  const ogDescription = get('og:description');
+  
+  // Log pour debug
+  logInfo(reqId, 'ogSP:meta', { ogTitle, ogDescription });
+  
+  let title = '';
   let artist = '';
-  let m = title.match(/\s*-\s*song(?:\s*and\s*lyrics)?\s*by\s*(.+)/i);
-  if (m) {
-    artist = m[1];
-    title = title.replace(/\s*-\s*song(?:\s*and\s*lyrics)?\s*by\s*.+/i, '');
-  } else {
-    m = title.match(/\s*·\s*(?:single|album|ep)\s*by\s*(.+)/i);
-    if (m) {
-      artist = m[1];
-      title = title.replace(/\s*·\s*(?:single|album|ep)\s*by\s*.+/i, '');
+  
+  // Parser le titre og:title qui peut avoir différents formats :
+  // "Depression - song and lyrics by Dax | Spotify"
+  // "Depression · song by Dax"
+  
+  if (ogTitle) {
+    // Retirer " | Spotify" et "- Spotify" à la fin
+    let cleanTitle = ogTitle.replace(/\s*[-|]\s*Spotify$/i, '').trim();
+    
+    // Format : "TITLE - song and lyrics by ARTIST"
+    let match = cleanTitle.match(/^(.+?)\s*-\s*song(?:\s*and\s*lyrics)?\s*by\s*(.+)$/i);
+    if (match) {
+      title = match[1].trim();
+      artist = match[2].trim();
+    } else {
+      // Format : "TITLE · song by ARTIST"
+      match = cleanTitle.match(/^(.+?)\s*·\s*(?:song|single|album|ep)\s*by\s*(.+)$/i);
+      if (match) {
+        title = match[1].trim();
+        artist = match[2].trim();
+      } else {
+        // Sinon, le titre complet
+        title = cleanTitle;
+      }
     }
   }
-  return { 
-    title: stripTitleNoise(title), 
-    author: stripArtistNoise(artist) 
+  
+  // Méthode 2 : Parser depuis JSON-LD ou __NEXT_DATA__
+  if (!title || !artist) {
+    const jsonLdMatch = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>(\{[^<]+\})<\/script>/);
+    if (jsonLdMatch) {
+      try {
+        const jsonData = JSON.parse(jsonLdMatch[1]);
+        if (jsonData.name) title = jsonData.name;
+        if (jsonData.byArtist?.name) artist = jsonData.byArtist.name;
+        logInfo(reqId, 'ogSP:jsonLd', { title, artist });
+      } catch (e) {
+        logWarn(reqId, 'ogSP:jsonLdError', String(e));
+      }
+    }
+  }
+  
+  // Méthode 3 : Extraire depuis les data attributes ou le HTML
+  if (!title || !artist) {
+    // Chercher les patterns dans le HTML
+    const titleMatch = html.match(/"name"\s*:\s*"([^"]+)"/);
+    const artistMatch = html.match(/"artists"\s*:\s*\[\s*\{\s*"name"\s*:\s*"([^"]+)"/);
+    
+    if (titleMatch && !title) title = titleMatch[1];
+    if (artistMatch && !artist) artist = artistMatch[1];
+    
+    logInfo(reqId, 'ogSP:htmlExtract', { title, artist });
+  }
+  
+  if (!title) {
+    logWarn(reqId, 'ogSP:noTitle');
+    return null;
+  }
+  
+  const result = {
+    title: stripTitleNoise(title),
+    author: stripArtistNoise(artist)
   };
+  
+  logInfo(reqId, 'ogSP:result', result);
+  return result;
 }
 
 async function fetchAppleMusicOG(url, reqId) {
@@ -718,30 +781,102 @@ module.exports = {
         logInfo(reqId, 'type:spTrack');
         const meta = await fetchSpotifyOG(query, reqId);
         
-        if (meta) {
-          const scQuery = `${meta.author} ${meta.title}`.trim();
-          const scResults = await scSearch(client, interaction.user, scQuery, 3, reqId);
+        if (meta && meta.title) {
+          // Construction de plusieurs requêtes de recherche
+          const queries = [];
           
-          if (scResults.length > 0) {
-            player.queue.add(scResults[0]);
+          // Query 1 : Artiste + Titre (si artiste présent)
+          if (meta.author) {
+            queries.push(`"${meta.author}" "${meta.title}"`);
+            queries.push(`${meta.author} ${meta.title}`);
+          }
+          
+          // Query 2 : Titre seul
+          queries.push(`"${meta.title}"`);
+          queries.push(meta.title);
+          
+          logInfo(reqId, 'spTrack:queries', { queries });
+          
+          let bestResult = null;
+          let bestScore = 0;
+          
+          // Essayer chaque query
+          for (const searchQuery of queries) {
+            const scResults = await scSearch(client, interaction.user, searchQuery, 5, reqId);
+            
+            if (!scResults || scResults.length === 0) continue;
+            
+            // Scorer chaque résultat
+            for (const result of scResults) {
+              const resultTitle = result.title || '';
+              const resultAuthor = result.author || '';
+              
+              // Calcul du score
+              let score = 0;
+              
+              // 1. Score de titre (le plus important)
+              const titleScore = jaccard(meta.title, resultTitle);
+              score += titleScore * 0.6;
+              
+              // 2. Score d'artiste (si présent)
+              if (meta.author) {
+                const authorScore = jaccard(meta.author, resultAuthor);
+                score += authorScore * 0.3;
+                
+                // Bonus si l'artiste apparaît dans le résultat
+                const normalizedAuthor = normalize(meta.author);
+                const authorInResult = normalize(resultAuthor).includes(normalizedAuthor) || 
+                                      normalize(resultTitle).includes(normalizedAuthor);
+                if (authorInResult) score += 0.2;
+              }
+              
+              // 3. Vérifier que les mots clés du titre sont présents
+              const titleTokens = coreTokens(meta.title);
+              const resultTokens = tokenSet(`${resultTitle} ${resultAuthor}`);
+              const overlap = titleTokens.filter(t => resultTokens.has(t)).length;
+              const tokenRatio = titleTokens.length > 0 ? overlap / titleTokens.length : 0;
+              score += tokenRatio * 0.1;
+              
+              logInfo(reqId, 'spTrack:score', {
+                result: `${resultAuthor} - ${resultTitle}`,
+                titleScore: titleScore.toFixed(2),
+                tokenRatio: tokenRatio.toFixed(2),
+                totalScore: score.toFixed(2)
+              });
+              
+              if (score > bestScore) {
+                bestScore = score;
+                bestResult = result;
+              }
+            }
+          }
+          
+          // Seuil de confiance
+          if (bestResult && bestScore > 0.4) {
+            player.queue.add(bestResult);
             if (!player.playing && !player.paused) {
               player.play();
             }
             return interaction.editReply({
               embeds: [buildEmbed(gid, {
                 type: 'success',
-                title: 'Piste ajoutée',
-                description: `**${scResults[0].title}**\npar ${scResults[0].author}`
+                title: 'Piste Spotify ajoutée',
+                description: `**${bestResult.title}**\npar ${bestResult.author}\n\n*Score de confiance: ${(bestScore * 100).toFixed(0)}%*`
               })]
             });
           }
+          
+          logWarn(reqId, 'spTrack:lowConfidence', { 
+            bestScore: bestScore.toFixed(2),
+            bestResult: bestResult?.title 
+          });
         }
         
         return interaction.editReply({
           embeds: [buildEmbed(gid, {
             type: 'error',
             title: 'Erreur',
-            description: 'Piste Spotify non trouvée sur SoundCloud.'
+            description: 'Piste Spotify non trouvée sur SoundCloud ou correspondance trop faible.'
           })]
         });
       }
