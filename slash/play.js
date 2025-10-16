@@ -170,7 +170,7 @@ async function fetchSpotifyOG(url, reqId) {
   
   const html = await resp.text();
   
-  // Méthode 1 : Extraire depuis les meta tags og:
+  // Extraire les meta tags
   const get = (prop) => {
     const m = html.match(new RegExp(`<meta\\s+property="${prop}"\\s+content="([^"]*)"`, 'i'));
     return m?.[1] || '';
@@ -179,46 +179,58 @@ async function fetchSpotifyOG(url, reqId) {
   const ogTitle = get('og:title');
   const ogDescription = get('og:description');
   
-  // Log pour debug
   logInfo(reqId, 'ogSP:meta', { ogTitle, ogDescription });
   
   let title = '';
   let artist = '';
   
-  // Parser le titre og:title qui peut avoir différents formats :
-  // "Depression - song and lyrics by Dax | Spotify"
-  // "Depression · song by Dax"
+  // === EXTRACTION DEPUIS og:description ===
+  // Format typique: "Dax · Depression · Song · 2022"
+  // ou "Artist Name · Track Name · Song · Year"
+  if (ogDescription) {
+    const parts = ogDescription.split('·').map(p => p.trim());
+    
+    // Si on a au moins 3 parties séparées par ·
+    if (parts.length >= 3) {
+      // Le premier élément est généralement l'artiste
+      artist = parts[0];
+      // Le deuxième élément est le titre
+      title = parts[1];
+      
+      logInfo(reqId, 'ogSP:fromDescription', { artist, title });
+    }
+  }
   
-  if (ogTitle) {
-    // Retirer " | Spotify" et "- Spotify" à la fin
+  // === EXTRACTION DEPUIS og:title (fallback) ===
+  if (!title && ogTitle) {
     let cleanTitle = ogTitle.replace(/\s*[-|]\s*Spotify$/i, '').trim();
     
     // Format : "TITLE - song and lyrics by ARTIST"
     let match = cleanTitle.match(/^(.+?)\s*-\s*song(?:\s*and\s*lyrics)?\s*by\s*(.+)$/i);
     if (match) {
       title = match[1].trim();
-      artist = match[2].trim();
+      if (!artist) artist = match[2].trim();
     } else {
       // Format : "TITLE · song by ARTIST"
       match = cleanTitle.match(/^(.+?)\s*·\s*(?:song|single|album|ep)\s*by\s*(.+)$/i);
       if (match) {
         title = match[1].trim();
-        artist = match[2].trim();
-      } else {
-        // Sinon, le titre complet
+        if (!artist) artist = match[2].trim();
+      } else if (!title) {
+        // Utiliser le titre complet comme fallback
         title = cleanTitle;
       }
     }
   }
   
-  // Méthode 2 : Parser depuis JSON-LD ou __NEXT_DATA__
+  // === EXTRACTION DEPUIS JSON-LD ===
   if (!title || !artist) {
     const jsonLdMatch = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>(\{[^<]+\})<\/script>/);
     if (jsonLdMatch) {
       try {
         const jsonData = JSON.parse(jsonLdMatch[1]);
-        if (jsonData.name) title = jsonData.name;
-        if (jsonData.byArtist?.name) artist = jsonData.byArtist.name;
+        if (jsonData.name && !title) title = jsonData.name;
+        if (jsonData.byArtist?.name && !artist) artist = jsonData.byArtist.name;
         logInfo(reqId, 'ogSP:jsonLd', { title, artist });
       } catch (e) {
         logWarn(reqId, 'ogSP:jsonLdError', String(e));
@@ -226,14 +238,19 @@ async function fetchSpotifyOG(url, reqId) {
     }
   }
   
-  // Méthode 3 : Extraire depuis les data attributes ou le HTML
+  // === EXTRACTION DEPUIS HTML (patterns JSON) ===
   if (!title || !artist) {
-    // Chercher les patterns dans le HTML
-    const titleMatch = html.match(/"name"\s*:\s*"([^"]+)"/);
-    const artistMatch = html.match(/"artists"\s*:\s*\[\s*\{\s*"name"\s*:\s*"([^"]+)"/);
+    // Chercher "name":"titre"
+    if (!title) {
+      const titleMatch = html.match(/"name"\s*:\s*"([^"]+)"/);
+      if (titleMatch) title = titleMatch[1];
+    }
     
-    if (titleMatch && !title) title = titleMatch[1];
-    if (artistMatch && !artist) artist = artistMatch[1];
+    // Chercher "artists":[{"name":"artiste"
+    if (!artist) {
+      const artistMatch = html.match(/"artists"\s*:\s*\[\s*\{\s*"name"\s*:\s*"([^"]+)"/);
+      if (artistMatch) artist = artistMatch[1];
+    }
     
     logInfo(reqId, 'ogSP:htmlExtract', { title, artist });
   }
@@ -251,6 +268,7 @@ async function fetchSpotifyOG(url, reqId) {
   logInfo(reqId, 'ogSP:result', result);
   return result;
 }
+
 
 async function fetchAppleMusicOG(url, reqId) {
   logInfo(reqId, 'meta:ogAM:start', { url });
@@ -785,24 +803,25 @@ module.exports = {
           // Construction de plusieurs requêtes de recherche
           const queries = [];
           
-          // Query 1 : Artiste + Titre (si artiste présent)
+          // Query 1 : Artiste + Titre avec guillemets (si artiste présent)
           if (meta.author) {
             queries.push(`"${meta.author}" "${meta.title}"`);
             queries.push(`${meta.author} ${meta.title}`);
+            queries.push(`${meta.author} - ${meta.title}`);
           }
           
           // Query 2 : Titre seul
           queries.push(`"${meta.title}"`);
           queries.push(meta.title);
           
-          logInfo(reqId, 'spTrack:queries', { queries });
+          logInfo(reqId, 'spTrack:queries', { queries, meta });
           
           let bestResult = null;
           let bestScore = 0;
           
           // Essayer chaque query
           for (const searchQuery of queries) {
-            const scResults = await scSearch(client, interaction.user, searchQuery, 5, reqId);
+            const scResults = await scSearch(client, interaction.user, searchQuery, 10, reqId);
             
             if (!scResults || scResults.length === 0) continue;
             
@@ -814,20 +833,29 @@ module.exports = {
               // Calcul du score
               let score = 0;
               
-              // 1. Score de titre (le plus important)
+              // 1. Score de titre (très important)
               const titleScore = jaccard(meta.title, resultTitle);
-              score += titleScore * 0.6;
+              score += titleScore * 0.5;
               
-              // 2. Score d'artiste (si présent)
+              // 2. Score d'artiste (crucial si présent)
               if (meta.author) {
                 const authorScore = jaccard(meta.author, resultAuthor);
                 score += authorScore * 0.3;
                 
-                // Bonus si l'artiste apparaît dans le résultat
+                // Bonus MAJEUR si l'artiste exact apparaît
                 const normalizedAuthor = normalize(meta.author);
-                const authorInResult = normalize(resultAuthor).includes(normalizedAuthor) || 
-                                      normalize(resultTitle).includes(normalizedAuthor);
-                if (authorInResult) score += 0.2;
+                const normalizedResultAuthor = normalize(resultAuthor);
+                const normalizedResultTitle = normalize(resultTitle);
+                
+                // Bonus si l'artiste est dans l'auteur
+                if (normalizedResultAuthor.includes(normalizedAuthor) || normalizedAuthor.includes(normalizedResultAuthor)) {
+                  score += 0.3;
+                }
+                
+                // Bonus si l'artiste est dans le titre
+                if (normalizedResultTitle.includes(normalizedAuthor)) {
+                  score += 0.15;
+                }
               }
               
               // 3. Vérifier que les mots clés du titre sont présents
@@ -835,7 +863,11 @@ module.exports = {
               const resultTokens = tokenSet(`${resultTitle} ${resultAuthor}`);
               const overlap = titleTokens.filter(t => resultTokens.has(t)).length;
               const tokenRatio = titleTokens.length > 0 ? overlap / titleTokens.length : 0;
-              score += tokenRatio * 0.1;
+              
+              // Pénalité si moins de 80% des tokens du titre sont présents
+              if (tokenRatio < 0.8) {
+                score *= 0.7;
+              }
               
               logInfo(reqId, 'spTrack:score', {
                 result: `${resultAuthor} - ${resultTitle}`,
@@ -851,8 +883,10 @@ module.exports = {
             }
           }
           
-          // Seuil de confiance
-          if (bestResult && bestScore > 0.4) {
+          // Seuil de confiance ajusté
+          const threshold = meta.author ? 0.5 : 0.4;
+          
+          if (bestResult && bestScore >= threshold) {
             player.queue.add(bestResult);
             if (!player.playing && !player.paused) {
               player.play();
@@ -861,14 +895,16 @@ module.exports = {
               embeds: [buildEmbed(gid, {
                 type: 'success',
                 title: 'Piste Spotify ajoutée',
-                description: `**${bestResult.title}**\npar ${bestResult.author}\n\n*Score de confiance: ${(bestScore * 100).toFixed(0)}%*`
+                description: `**${bestResult.title}**\npar ${bestResult.author}\n\n*Correspondance: ${(bestScore * 100).toFixed(0)}%*`
               })]
             });
           }
           
           logWarn(reqId, 'spTrack:lowConfidence', { 
             bestScore: bestScore.toFixed(2),
-            bestResult: bestResult?.title 
+            threshold,
+            bestResult: bestResult?.title,
+            meta
           });
         }
         
@@ -876,7 +912,7 @@ module.exports = {
           embeds: [buildEmbed(gid, {
             type: 'error',
             title: 'Erreur',
-            description: 'Piste Spotify non trouvée sur SoundCloud ou correspondance trop faible.'
+            description: 'Piste Spotify non trouvée sur SoundCloud.\nEssayez avec une recherche directe du titre.'
           })]
         });
       }
