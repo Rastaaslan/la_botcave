@@ -8,10 +8,20 @@ const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...ar
 ========================= */
 const LOG_PREFIX = '[PLAY]';
 const SC_PREFIX = '[SC]';
-const SC_SET = /soundcloud\.com\/[^/]+\/sets\/[^/]+/i;
-const SC_TRACK = /soundcloud\.com\/[^/]+\/[^/]+/i;
-const YT_PLAYLIST = /(?:youtu\.be|youtube\.com).*?[?&]list=/i;
-const SP_PLAYLIST_OR_ALBUM = /(?:open\.spotify\.com\/(?:playlist|album)\/|spotify:(?:playlist|album):)/i;
+
+// Regex patterns optimisées
+const PATTERNS = {
+  SC_PLAYLIST: /soundcloud\.com\/[^/]+\/sets\/[^/?]+/i,
+  SC_TRACK: /soundcloud\.com\/[^/]+\/[^/?]+/i,
+  YT_PLAYLIST: /(?:youtube\.com\/(?:watch\?.*?list=|playlist\?list=)|youtu\.be\/.*?\?list=)([a-zA-Z0-9_-]+)/i,
+  YT_VIDEO: /(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)/i,
+  SP_PLAYLIST: /open\.spotify\.com\/playlist\/([a-zA-Z0-9]+)/i,
+  SP_ALBUM: /open\.spotify\.com\/album\/([a-zA-Z0-9]+)/i,
+  SP_TRACK: /open\.spotify\.com\/track\/([a-zA-Z0-9]+)/i,
+  AM_TRACK: /music\.apple\.com\/[a-z]{2}\/(?:album\/[^/]+\/\d+\?i=(\d+)|song\/[^/]+\/(\d+))/i,
+  AM_PLAYLIST: /music\.apple\.com\/[a-z]{2}\/playlist\/[^/]+\/(pl\.[a-zA-Z0-9-]+)/i,
+  AM_ALBUM: /music\.apple\.com\/[a-z]{2}\/album\/[^/]+\/(\d+)(?:\?(?!i=)|$)/i
+};
 
 /* ========================= 
    Configuration Spotify API
@@ -22,44 +32,36 @@ const SPOTIFY_CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET || '';
 let spotifyAccessToken = null;
 let tokenExpiry = 0;
 
+/* ========================= 
+   Utilitaires de base
+========================= */
 function isUrl(s) {
-  try { new URL(s); return true; } catch { return false; }
+  try { 
+    new URL(s); 
+    return true; 
+  } catch { 
+    return false; 
+  }
 }
 
 function isYouTubeUri(uri) {
   return typeof uri === 'string' && /youtu\.be|youtube\.com/i.test(uri);
 }
 
-function isYouTubeUrl(s) {
-  return typeof s === 'string' && /youtu\.be|youtube\.com/i.test(s);
-}
-
-function isSpotifyTrackUrl(s) {
-  if (typeof s !== 'string') return false;
-  return /https?:\/\/open\.spotify\.com\/(?:[a-z-]+\/)?track\/[A-Za-z0-9]+/i.test(s) 
-      || /^spotify:track:[A-Za-z0-9]+$/i.test(s);
-}
-
-function isAppleMusicTrackUrl(s) {
-  if (typeof s !== 'string') return false;
-  return /https?:\/\/music\.apple\.com\/(?:[a-z]{2}\/)?(?:album\/[^\/]+\/\d+\?i=\d+|song\/[^\/]+\/\d+)/i.test(s);
-}
-
-function isAppleMusicPlaylistUrl(s) {
-  if (typeof s !== 'string') return false;
-  return /https?:\/\/music\.apple\.com\/(?:[a-z]{2}\/)?playlist\/[^\/]+\/pl\.[a-zA-Z0-9-]+/i.test(s);
-}
-
-function isAppleMusicAlbumUrl(s) {
-  if (typeof s !== 'string') return false;
-  return /https?:\/\/music\.apple\.com\/(?:[a-z]{2}\/)?album\/[^\/]+\/\d+(?:\?(?!i=)|$)/i.test(s);
-}
-
 /* ========================= 
    Logging helpers 
 ========================= */
-const logInfo = (id, tag, payload) => console.log(LOG_PREFIX, id, tag, payload || '');
-const logWarn = (id, tag, payload) => console.warn(LOG_PREFIX, id, tag, payload || '');
+const logInfo = (id, tag, payload = '') => {
+  console.log(`${LOG_PREFIX} [${id}] ${tag}`, typeof payload === 'object' ? JSON.stringify(payload) : payload);
+};
+
+const logWarn = (id, tag, payload = '') => {
+  console.warn(`${LOG_PREFIX} [${id}] ⚠️  ${tag}`, typeof payload === 'object' ? JSON.stringify(payload) : payload);
+};
+
+const logError = (id, tag, payload = '') => {
+  console.error(`${LOG_PREFIX} [${id}] ❌ ${tag}`, typeof payload === 'object' ? JSON.stringify(payload) : payload);
+};
 
 /* ========================= 
    Normalisation & scoring 
@@ -68,277 +70,340 @@ function normalize(s) {
   if (!s) return '';
   return s
     .toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9\s]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
 function stripTitleNoise(title) {
+  if (!title) return '';
   let t = title;
+  
+  // Retirer le contenu entre parenthèses/crochets
   t = t.replace(/\(.*?\)/g, '');
   t = t.replace(/\[.*?\]/g, '');
-  t = t.replace(/\b(?:official|audio|video|music|lyric|lyrics|visuali?zer?|mv|hd|hq|4k|remaster(?:ed)?|explicit|clean|radio|edit|extended|version|ft\.?|feat(?:uring)?\.?)\b/ig, '');
+  
+  // Retirer les mots-clés communs
+  const noise = /\b(?:official|audio|video|music|lyric|lyrics|visuali?zer?|mv|hd|hq|4k|remaster(?:ed)?|explicit|clean|radio|edit|extended|version|ft\.?|feat(?:uring)?\.?)\b/ig;
+  t = t.replace(noise, '');
+  
+  // Retirer les jurons censurés
   t = t.replace(/\bf[*u]ck(?:ed|ing)?\b/ig, '');
+  
+  // Normaliser les séparateurs
   t = t.replace(/[_\-—–·]+/g, ' ');
+  
+  // Prendre uniquement la partie avant |
   t = t.split('|')[0];
-  return normalize(t);
+  
+  return t.trim();
 }
 
 function stripArtistNoise(artist) {
-  return normalize(artist).replace(/-\s*topic$/i, '');
+  if (!artist) return '';
+  return artist.replace(/-\s*topic$/i, '').trim();
 }
 
 function tokenSet(s) {
   return new Set(normalize(s).split(/\s+/).filter(Boolean));
 }
 
-function jaccard(a, b) {
-  const A = new Set(normalize(a).split(/\s+/).filter(Boolean));
-  const B = new Set(normalize(b).split(/\s+/).filter(Boolean));
-  const inter = [...A].filter(x => B.has(x)).length;
-  const union = A.size + B.size - inter + 1;
-  return inter / union;
-}
-
 function coreTokens(s) {
   return [...tokenSet(s)].filter(w => w.length >= 2);
 }
 
-function dynamicBoostGeneric(title, author, wantTokens) {
-  let b = 0;
-  const T = tokenSet(title);
-  const A = tokenSet(author);
-  const overlapTitle = wantTokens.filter(t => T.has(t)).length;
-  const overlapAuthor = wantTokens.filter(t => A.has(t)).length;
-  if (overlapTitle >= 2) b += 0.12;
-  if (overlapAuthor >= 1) b += 0.10;
-  return b;
+function jaccard(a, b) {
+  const A = tokenSet(a);
+  const B = tokenSet(b);
+  if (A.size === 0 && B.size === 0) return 1;
+  if (A.size === 0 || B.size === 0) return 0;
+  
+  const inter = [...A].filter(x => B.has(x)).length;
+  const union = A.size + B.size - inter;
+  
+  return union > 0 ? inter / union : 0;
 }
 
 /* ========================= 
    Recherches SoundCloud 
 ========================= */
 async function scSearch(client, requester, q, limit, reqId) {
-  console.log(SC_PREFIX, reqId, 'search', JSON.stringify({ q, limit }));
-  const res = await client.manager.search({ 
-    query: q, 
-    source: 'soundcloud', 
-    requester 
-  });
-  const n = res?.tracks?.length || 0;
-  console.log(SC_PREFIX, reqId, 'results', n);
-  return (res?.tracks || []).slice(0, limit).filter(t => !isYouTubeUri(t?.uri));
+  try {
+    logInfo(reqId, 'scSearch', { query: q, limit });
+    
+    const res = await client.manager.search({ 
+      query: q, 
+      source: 'soundcloud', 
+      requester 
+    });
+    
+    const tracks = (res?.tracks || [])
+      .slice(0, limit)
+      .filter(t => t && !isYouTubeUri(t.uri));
+    
+    logInfo(reqId, 'scSearch:results', { count: tracks.length });
+    return tracks;
+    
+  } catch (err) {
+    logError(reqId, 'scSearch:error', err.message);
+    return [];
+  }
 }
 
 /* ========================= 
-   Métadonnées (OG Tags) 
+   Spotify Access Token 
 ========================= */
-async function fetchYouTubeOEmbed(url, reqId) {
-  const o = new URL('https://www.youtube.com/oembed');
-  o.searchParams.set('url', url);
-  o.searchParams.set('format', 'json');
-  const resp = await fetch(o.toString(), { 
-    headers: { 'Accept': 'application/json' } 
-  });
-  if (!resp.ok) {
-    logWarn(reqId, 'oembedYT:http', { status: resp.status });
-    return null;
+async function getSpotifyAccessToken(reqId) {
+  try {
+    // Réutiliser le token s'il est encore valide
+    if (spotifyAccessToken && Date.now() < tokenExpiry) {
+      return spotifyAccessToken;
+    }
+
+    if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET) {
+      throw new Error('Spotify credentials not configured');
+    }
+
+    logInfo(reqId, 'spotify:token:refresh');
+    
+    const auth = Buffer.from(`${SPOTIFY_CLIENT_ID}:${SPOTIFY_CLIENT_SECRET}`).toString('base64');
+    
+    const resp = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: 'grant_type=client_credentials',
+      timeout: 10000
+    });
+    
+    if (!resp.ok) {
+      throw new Error(`Spotify Auth failed: ${resp.status}`);
+    }
+    
+    const data = await resp.json();
+    spotifyAccessToken = data.access_token;
+    tokenExpiry = Date.now() + (data.expires_in * 1000) - 60000; // -1 minute de sécurité
+    
+    logInfo(reqId, 'spotify:token:success', { expiresIn: data.expires_in });
+    return spotifyAccessToken;
+    
+  } catch (err) {
+    logError(reqId, 'spotify:token:error', err.message);
+    throw err;
   }
-  const data = await resp.json();
-  return { 
-    title: String(data?.title || ''), 
-    author: String(data?.author_name || '') 
-  };
 }
 
-async function fetchSpotifyOG(url, reqId) {
-  logInfo(reqId, 'ogSP:start', { url });
-  
-  const resp = await fetch(url, { 
-    headers: { 
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 
-      'Accept': 'text/html,application/xhtml+xml',
-      'Accept-Language': 'en-US,en;q=0.9'
-    } 
-  });
-  
-  if (!resp.ok) {
-    logWarn(reqId, 'ogSP:http', { status: resp.status });
+/* ========================= 
+   Extraction métadonnées YouTube
+========================= */
+async function fetchYouTubeOEmbed(url, reqId) {
+  try {
+    logInfo(reqId, 'yt:oembed:start', { url });
+    
+    const oembedUrl = new URL('https://www.youtube.com/oembed');
+    oembedUrl.searchParams.set('url', url);
+    oembedUrl.searchParams.set('format', 'json');
+    
+    const resp = await fetch(oembedUrl.toString(), { 
+      headers: { 'Accept': 'application/json' },
+      timeout: 10000
+    });
+    
+    if (!resp.ok) {
+      logWarn(reqId, 'yt:oembed:http', { status: resp.status });
+      return null;
+    }
+    
+    const data = await resp.json();
+    const result = { 
+      title: stripTitleNoise(data?.title || ''), 
+      author: stripArtistNoise(data?.author_name || '') 
+    };
+    
+    logInfo(reqId, 'yt:oembed:success', result);
+    return result;
+    
+  } catch (err) {
+    logError(reqId, 'yt:oembed:error', err.message);
     return null;
   }
-  
-  const html = await resp.text();
-  
-  // Extraire les meta tags
-  const get = (prop) => {
-    const m = html.match(new RegExp(`<meta\\s+property="${prop}"\\s+content="([^"]*)"`, 'i'));
-    return m?.[1] || '';
-  };
-  
-  const ogTitle = get('og:title');
-  const ogDescription = get('og:description');
-  
-  logInfo(reqId, 'ogSP:meta', { ogTitle, ogDescription });
-  
-  let title = '';
-  let artist = '';
-  
-  // === EXTRACTION DEPUIS og:description ===
-  // Format typique: "Dax · Depression · Song · 2022"
-  // ou "Artist Name · Track Name · Song · Year"
-  if (ogDescription) {
-    const parts = ogDescription.split('·').map(p => p.trim());
+}
+
+/* ========================= 
+   Extraction métadonnées Spotify
+========================= */
+async function fetchSpotifyOG(url, reqId) {
+  try {
+    logInfo(reqId, 'sp:og:start', { url });
     
-    // Si on a au moins 3 parties séparées par ·
-    if (parts.length >= 3) {
-      // Le premier élément est généralement l'artiste
-      artist = parts[0];
-      // Le deuxième élément est le titre
-      title = parts[1];
-      
-      logInfo(reqId, 'ogSP:fromDescription', { artist, title });
+    const resp = await fetch(url, { 
+      headers: { 
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9'
+      },
+      timeout: 10000
+    });
+    
+    if (!resp.ok) {
+      logWarn(reqId, 'sp:og:http', { status: resp.status });
+      return null;
     }
-  }
-  
-  // === EXTRACTION DEPUIS og:title (fallback) ===
-  if (!title && ogTitle) {
-    let cleanTitle = ogTitle.replace(/\s*[-|]\s*Spotify$/i, '').trim();
     
-    // Format : "TITLE - song and lyrics by ARTIST"
-    let match = cleanTitle.match(/^(.+?)\s*-\s*song(?:\s*and\s*lyrics)?\s*by\s*(.+)$/i);
-    if (match) {
-      title = match[1].trim();
-      if (!artist) artist = match[2].trim();
-    } else {
-      // Format : "TITLE · song by ARTIST"
-      match = cleanTitle.match(/^(.+?)\s*·\s*(?:song|single|album|ep)\s*by\s*(.+)$/i);
+    const html = await resp.text();
+    
+    // Extraire les meta tags
+    const getMeta = (prop) => {
+      const match = html.match(new RegExp(`<meta\\s+property="${prop}"\\s+content="([^"]*)"`, 'i'));
+      return match?.[1] || '';
+    };
+    
+    const ogTitle = getMeta('og:title');
+    const ogDescription = getMeta('og:description');
+    
+    let title = '';
+    let artist = '';
+    
+    // === STRATÉGIE 1: og:description ===
+    // Format: "Artist · Title · Song · Year"
+    if (ogDescription) {
+      const parts = ogDescription.split('·').map(p => p.trim());
+      if (parts.length >= 2) {
+        artist = parts[0];
+        title = parts[1];
+        logInfo(reqId, 'sp:og:fromDescription', { artist, title });
+      }
+    }
+    
+    // === STRATÉGIE 2: og:title (fallback) ===
+    if (!title && ogTitle) {
+      let cleanTitle = ogTitle.replace(/\s*[-|]\s*Spotify$/i, '').trim();
+      
+      // Format : "TITLE - song and lyrics by ARTIST"
+      let match = cleanTitle.match(/^(.+?)\s*-\s*song(?:\s*and\s*lyrics)?\s*by\s*(.+)$/i);
       if (match) {
         title = match[1].trim();
         if (!artist) artist = match[2].trim();
-      } else if (!title) {
-        // Utiliser le titre complet comme fallback
-        title = cleanTitle;
+      } else {
+        // Format : "TITLE · song by ARTIST"
+        match = cleanTitle.match(/^(.+?)\s*·\s*(?:song|single|album|ep)\s*by\s*(.+)$/i);
+        if (match) {
+          title = match[1].trim();
+          if (!artist) artist = match[2].trim();
+        } else if (!title) {
+          title = cleanTitle;
+        }
       }
     }
-  }
-  
-  // === EXTRACTION DEPUIS JSON-LD ===
-  if (!title || !artist) {
-    const jsonLdMatch = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>(\{[^<]+\})<\/script>/);
-    if (jsonLdMatch) {
-      try {
-        const jsonData = JSON.parse(jsonLdMatch[1]);
-        if (jsonData.name && !title) title = jsonData.name;
-        if (jsonData.byArtist?.name && !artist) artist = jsonData.byArtist.name;
-        logInfo(reqId, 'ogSP:jsonLd', { title, artist });
-      } catch (e) {
-        logWarn(reqId, 'ogSP:jsonLdError', String(e));
+    
+    // === STRATÉGIE 3: JSON-LD ===
+    if (!title || !artist) {
+      const jsonLdMatch = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>(\{[^<]+\})<\/script>/);
+      if (jsonLdMatch) {
+        try {
+          const jsonData = JSON.parse(jsonLdMatch[1]);
+          if (jsonData.name && !title) title = jsonData.name;
+          if (jsonData.byArtist?.name && !artist) artist = jsonData.byArtist.name;
+          logInfo(reqId, 'sp:og:jsonLd', { title, artist });
+        } catch (e) {
+          logWarn(reqId, 'sp:og:jsonLdError', e.message);
+        }
       }
     }
-  }
-  
-  // === EXTRACTION DEPUIS HTML (patterns JSON) ===
-  if (!title || !artist) {
-    // Chercher "name":"titre"
+    
+    // === STRATÉGIE 4: Extraction HTML brute ===
+    if (!title || !artist) {
+      if (!title) {
+        const titleMatch = html.match(/"name"\s*:\s*"([^"]+)"/);
+        if (titleMatch) title = titleMatch[1];
+      }
+      
+      if (!artist) {
+        const artistMatch = html.match(/"artists"\s*:\s*\[\s*\{\s*"name"\s*:\s*"([^"]+)"/);
+        if (artistMatch) artist = artistMatch[1];
+      }
+      
+      if (title || artist) {
+        logInfo(reqId, 'sp:og:htmlExtract', { title, artist });
+      }
+    }
+    
     if (!title) {
-      const titleMatch = html.match(/"name"\s*:\s*"([^"]+)"/);
-      if (titleMatch) title = titleMatch[1];
-    }
-    
-    // Chercher "artists":[{"name":"artiste"
-    if (!artist) {
-      const artistMatch = html.match(/"artists"\s*:\s*\[\s*\{\s*"name"\s*:\s*"([^"]+)"/);
-      if (artistMatch) artist = artistMatch[1];
-    }
-    
-    logInfo(reqId, 'ogSP:htmlExtract', { title, artist });
-  }
-  
-  if (!title) {
-    logWarn(reqId, 'ogSP:noTitle');
-    return null;
-  }
-  
-  const result = {
-    title: stripTitleNoise(title),
-    author: stripArtistNoise(artist)
-  };
-  
-  logInfo(reqId, 'ogSP:result', result);
-  return result;
-}
-
-
-async function fetchAppleMusicOG(url, reqId) {
-  logInfo(reqId, 'meta:ogAM:start', { url });
-  try {
-    const res = await fetch(url, { 
-      headers: { 'User-Agent': 'Mozilla/5.0' }, 
-      redirect: 'follow' 
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const html = await res.text();
-    const titleMatch = html.match(/"name":"([^"]+)"/);
-    const artistMatch = html.match(/"artist(?:Name)?":"([^"]+)"/);
-    if (!titleMatch) {
-      logWarn(reqId, 'meta:ogAM:noTitle');
+      logWarn(reqId, 'sp:og:noTitle');
       return null;
     }
-    return {
+    
+    const result = {
+      title: stripTitleNoise(title),
+      author: stripArtistNoise(artist)
+    };
+    
+    logInfo(reqId, 'sp:og:success', result);
+    return result;
+    
+  } catch (err) {
+    logError(reqId, 'sp:og:error', err.message);
+    return null;
+  }
+}
+
+/* ========================= 
+   Extraction métadonnées Apple Music
+========================= */
+async function fetchAppleMusicOG(url, reqId) {
+  try {
+    logInfo(reqId, 'am:og:start', { url });
+    
+    const resp = await fetch(url, { 
+      headers: { 'User-Agent': 'Mozilla/5.0' }, 
+      redirect: 'follow',
+      timeout: 10000
+    });
+    
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`);
+    }
+    
+    const html = await resp.text();
+    
+    const titleMatch = html.match(/"name":"([^"]+)"/);
+    const artistMatch = html.match(/"artist(?:Name)?":"([^"]+)"/);
+    
+    if (!titleMatch) {
+      logWarn(reqId, 'am:og:noTitle');
+      return null;
+    }
+    
+    const result = {
       title: stripTitleNoise(titleMatch[1] || ''),
       author: stripArtistNoise(artistMatch?.[1] || '')
     };
+    
+    logInfo(reqId, 'am:og:success', result);
+    return result;
+    
   } catch (err) {
-    logWarn(reqId, 'meta:ogAM:err', String(err));
+    logError(reqId, 'am:og:error', err.message);
     return null;
   }
 }
 
 /* ========================= 
-   Spotify API Token 
-========================= */
-async function getSpotifyAccessToken() {
-  // Réutiliser le token s'il est encore valide
-  if (spotifyAccessToken && Date.now() < tokenExpiry) {
-    return spotifyAccessToken;
-  }
-
-  if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET) {
-    throw new Error('Spotify credentials not configured');
-  }
-
-  const auth = Buffer.from(`${SPOTIFY_CLIENT_ID}:${SPOTIFY_CLIENT_SECRET}`).toString('base64');
-  
-  const resp = await fetch('https://accounts.spotify.com/api/token', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Basic ${auth}`,
-      'Content-Type': 'application/x-www-form-urlencoded'
-    },
-    body: 'grant_type=client_credentials'
-  });
-  
-  if (!resp.ok) {
-    throw new Error(`Spotify Auth failed: ${resp.status}`);
-  }
-  
-  const data = await resp.json();
-  spotifyAccessToken = data.access_token;
-  tokenExpiry = Date.now() + (data.expires_in * 1000) - 60000; // -1 minute de sécurité
-  
-  return spotifyAccessToken;
-}
-
-/* ========================= 
-   Extraction playlists YouTube 
+   Extraction playlist YouTube
 ========================= */
 async function extractYouTubePlaylistTracks(url, reqId) {
-  logInfo(reqId, 'ytPlaylist:start', { url });
   try {
-    const playlistId = extractYouTubePlaylistId(url);
+    logInfo(reqId, 'yt:playlist:start', { url });
+    
+    const match = url.match(PATTERNS.YT_PLAYLIST);
+    const playlistId = match?.[1];
+    
     if (!playlistId) {
-      logWarn(reqId, 'ytPlaylist:noId');
+      logWarn(reqId, 'yt:playlist:noId');
       return [];
     }
 
@@ -346,28 +411,30 @@ async function extractYouTubePlaylistTracks(url, reqId) {
       headers: { 
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept-Language': 'en-US,en;q=0.9'
-      }
+      },
+      timeout: 15000
     });
     
     if (!resp.ok) {
-      logWarn(reqId, 'ytPlaylist:httpError', { status: resp.status });
+      logWarn(reqId, 'yt:playlist:http', { status: resp.status });
       return [];
     }
 
     const html = await resp.text();
-    const match = html.match(/var ytInitialData = ({.+?});/);
-    if (!match) {
-      logWarn(reqId, 'ytPlaylist:noData');
+    const dataMatch = html.match(/var ytInitialData = ({.+?});/);
+    
+    if (!dataMatch) {
+      logWarn(reqId, 'yt:playlist:noData');
       return [];
     }
 
-    const data = JSON.parse(match[1]);
+    const data = JSON.parse(dataMatch[1]);
     const contents = data?.contents?.twoColumnBrowseResultsRenderer?.tabs?.[0]
       ?.tabRenderer?.content?.sectionListRenderer?.contents?.[0]
       ?.itemSectionRenderer?.contents?.[0]?.playlistVideoListRenderer?.contents;
 
     if (!contents) {
-      logWarn(reqId, 'ytPlaylist:noContents');
+      logWarn(reqId, 'yt:playlist:noContents');
       return [];
     }
 
@@ -390,60 +457,68 @@ async function extractYouTubePlaylistTracks(url, reqId) {
       }
     }
 
-    logInfo(reqId, 'ytPlaylist:extracted', { count: tracks.length });
+    logInfo(reqId, 'yt:playlist:success', { count: tracks.length });
     return tracks;
+    
   } catch (err) {
-    logWarn(reqId, 'ytPlaylist:error', String(err));
+    logError(reqId, 'yt:playlist:error', err.message);
     return [];
   }
 }
 
-function extractYouTubePlaylistId(url) {
-  const match = url.match(/[?&]list=([^&]+)/);
-  return match?.[1] || null;
-}
-
 /* ========================= 
-   Extraction playlists Spotify via API
+   Extraction playlist/album Spotify
 ========================= */
 async function extractSpotifyPlaylistTracks(url, reqId) {
-  logInfo(reqId, 'spPlaylist:start', { url });
   try {
-    // Extraction de l'ID
-    const match = url.match(/(?:playlist|album)\/([A-Za-z0-9]+)/);
-    if (!match) {
-      logWarn(reqId, 'spPlaylist:noId');
+    logInfo(reqId, 'sp:playlist:start', { url });
+    
+    // Déterminer le type et l'ID
+    let type, id;
+    
+    const playlistMatch = url.match(PATTERNS.SP_PLAYLIST);
+    const albumMatch = url.match(PATTERNS.SP_ALBUM);
+    
+    if (playlistMatch) {
+      type = 'playlist';
+      id = playlistMatch[1];
+    } else if (albumMatch) {
+      type = 'album';
+      id = albumMatch[1];
+    } else {
+      logWarn(reqId, 'sp:playlist:noId');
       return [];
     }
-
-    const id = match[1];
-    const type = url.includes('/playlist/') ? 'playlist' : 'album';
+    
+    logInfo(reqId, 'sp:playlist:type', { type, id });
     
     // Récupération du token
-    const token = await getSpotifyAccessToken();
+    const token = await getSpotifyAccessToken(reqId);
     
-    // Construction de l'endpoint selon le type
-    let endpoint;
-    if (type === 'playlist') {
-      endpoint = `https://api.spotify.com/v1/playlists/${id}/tracks?limit=100`;
-    } else {
-      endpoint = `https://api.spotify.com/v1/albums/${id}/tracks?limit=50`;
-    }
+    // Construction de l'endpoint
+    const endpoint = type === 'playlist' 
+      ? `https://api.spotify.com/v1/playlists/${id}/tracks?limit=100`
+      : `https://api.spotify.com/v1/albums/${id}/tracks?limit=50`;
     
     const tracks = [];
     let nextUrl = endpoint;
+    let page = 0;
     
-    // Pagination pour récupérer tous les morceaux
-    while (nextUrl) {
+    // Pagination
+    while (nextUrl && page < 10) { // Limite de 10 pages pour éviter les boucles infinies
+      page++;
+      logInfo(reqId, 'sp:playlist:page', { page, url: nextUrl });
+      
       const resp = await fetch(nextUrl, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Accept': 'application/json'
-        }
+        },
+        timeout: 10000
       });
       
       if (!resp.ok) {
-        logWarn(reqId, 'spPlaylist:httpError', { status: resp.status });
+        logWarn(reqId, 'sp:playlist:http', { status: resp.status, page });
         break;
       }
       
@@ -466,107 +541,166 @@ async function extractSpotifyPlaylistTracks(url, reqId) {
         });
       }
       
-      // Pagination
+      // Next page
       nextUrl = data.next;
     }
     
-    logInfo(reqId, 'spPlaylist:extracted', { count: tracks.length });
+    logInfo(reqId, 'sp:playlist:success', { count: tracks.length, pages: page });
     return tracks;
     
   } catch (err) {
-    logWarn(reqId, 'spPlaylist:error', String(err));
-    console.error('[DEBUG] Spotify API error:', err);
+    logError(reqId, 'sp:playlist:error', err.message);
     return [];
   }
 }
 
 /* ========================= 
-   Matching via SoundCloud 
+   Matching track sur SoundCloud
 ========================= */
 async function matchTrackOnSoundCloud(client, requester, track, reqId) {
-  const query = track.query || `${track.author} ${track.title}`.trim();
-  logInfo(reqId, 'scMatch:start', { query });
-
   try {
-    // Stratégie 1 : Recherche exacte avec guillemets (artiste + titre)
-    let results = await scSearch(client, requester, `"${track.author}" "${track.title}"`, 5, reqId);
+    const query = track.query || `${track.author} ${track.title}`.trim();
+    logInfo(reqId, 'sc:match:start', { query });
+
+    // Stratégies de recherche multiples
+    const strategies = [
+      { name: 'exact', query: `"${track.author}" "${track.title}"`, limit: 5 },
+      { name: 'standard', query: `${track.author} ${track.title}`, limit: 8 },
+      { name: 'title-only', query: track.title, limit: 10 }
+    ];
     
-    // Stratégie 2 : Si pas de résultats, essayer sans guillemets mais avec artiste et titre
-    if (!results || results.length === 0) {
-      logInfo(reqId, 'scMatch:tryStrategy2');
-      results = await scSearch(client, requester, `${track.author} ${track.title}`, 5, reqId);
+    let allResults = [];
+    
+    for (const strategy of strategies) {
+      if (!strategy.query.trim()) continue;
+      
+      logInfo(reqId, 'sc:match:strategy', { name: strategy.name, query: strategy.query });
+      
+      const results = await scSearch(client, requester, strategy.query, strategy.limit, reqId);
+      
+      if (results && results.length > 0) {
+        allResults = allResults.concat(results);
+        
+        // Si on a déjà de bons résultats avec la première stratégie, pas besoin de continuer
+        if (strategy.name === 'exact' && results.length >= 3) {
+          break;
+        }
+      }
     }
     
-    // Stratégie 3 : Si toujours rien, essayer juste le titre
-    if (!results || results.length === 0) {
-      logInfo(reqId, 'scMatch:tryStrategy3');
-      results = await scSearch(client, requester, track.title, 5, reqId);
-    }
-    
-    if (!results || results.length === 0) {
-      logWarn(reqId, 'scMatch:noResults', { query });
+    if (allResults.length === 0) {
+      logWarn(reqId, 'sc:match:noResults', { query });
       return null;
     }
+    
+    // Dédupliquer par URI
+    const uniqueResults = [];
+    const seenUris = new Set();
+    
+    for (const result of allResults) {
+      if (!seenUris.has(result.uri)) {
+        seenUris.add(result.uri);
+        uniqueResults.push(result);
+      }
+    }
+    
+    logInfo(reqId, 'sc:match:candidates', { total: uniqueResults.length });
 
-    // Scoring amélioré avec filtres stricts
-    const wantTokens = coreTokens(`${track.title} ${track.author}`);
+    // Scoring amélioré
+    const wantTitleTokens = coreTokens(track.title);
+    const wantAuthorTokens = coreTokens(track.author);
+    const normalizedWantAuthor = normalize(track.author);
+    
     let bestMatch = null;
     let bestScore = 0;
 
-    for (const result of results) {
+    for (const result of uniqueResults) {
       const resultTitle = result.title || '';
       const resultAuthor = result.author || '';
       
-      // Filtre 1 : Vérifier que l'artiste apparaît dans le résultat (titre ou auteur)
-      const normalizedAuthor = normalize(track.author);
-      const authorInResult = normalize(resultAuthor).includes(normalizedAuthor) || 
-                            normalize(resultTitle).includes(normalizedAuthor);
-      
-      // Filtre 2 : Vérifier qu'au moins 50% des mots du titre sont présents
-      const titleTokens = coreTokens(track.title);
+      const normalizedResultTitle = normalize(resultTitle);
+      const normalizedResultAuthor = normalize(resultAuthor);
       const resultTitleTokens = tokenSet(resultTitle);
-      const titleOverlap = titleTokens.filter(t => resultTitleTokens.has(t)).length;
-      const titleMatchRatio = titleTokens.length > 0 ? titleOverlap / titleTokens.length : 0;
+      const resultAuthorTokens = tokenSet(resultAuthor);
       
-      // Si l'artiste n'apparaît pas ET moins de 50% du titre matche, ignorer
-      if (!authorInResult && titleMatchRatio < 0.5) {
-        logInfo(reqId, 'scMatch:filtered', { 
+      // === FILTRES STRICTS ===
+      
+      // 1. Vérifier présence de l'artiste
+      const authorInAuthor = normalizedResultAuthor.includes(normalizedWantAuthor) || 
+                            normalizedWantAuthor.includes(normalizedResultAuthor);
+      const authorInTitle = normalizedResultTitle.includes(normalizedWantAuthor);
+      const hasArtist = authorInAuthor || authorInTitle;
+      
+      // 2. Vérifier overlap des tokens du titre
+      const titleOverlap = wantTitleTokens.filter(t => resultTitleTokens.has(t)).length;
+      const titleMatchRatio = wantTitleTokens.length > 0 ? titleOverlap / wantTitleTokens.length : 0;
+      
+      // Filtrer les résultats peu pertinents
+      if (!hasArtist && titleMatchRatio < 0.5) {
+        logInfo(reqId, 'sc:match:filtered', { 
           title: resultTitle,
-          reason: 'artist_and_title_mismatch'
+          reason: 'low_relevance',
+          artistMatch: hasArtist,
+          titleRatio: titleMatchRatio.toFixed(2)
         });
         continue;
       }
       
-      // Calcul du score avec pondération ajustée
+      // === CALCUL DU SCORE ===
+      
+      let score = 0;
+      
+      // 1. Score de titre (50% du poids)
       const titleScore = jaccard(track.title, resultTitle);
+      score += titleScore * 0.5;
+      
+      // 2. Score d'artiste (25% du poids)
       const authorScore = jaccard(track.author, resultAuthor);
-      const boost = dynamicBoostGeneric(resultTitle, resultAuthor, wantTokens);
+      score += authorScore * 0.25;
       
-      // Bonus si l'artiste exact est trouvé
-      const exactAuthorBonus = authorInResult ? 0.15 : 0;
+      // 3. Bonus pour correspondance exacte d'artiste (15%)
+      if (authorInAuthor) {
+        score += 0.15;
+      } else if (authorInTitle) {
+        score += 0.08;
+      }
       
-      // Pondération ajustée : privilégier le titre
-      const totalScore = titleScore * 0.5 + authorScore * 0.25 + boost + exactAuthorBonus;
+      // 4. Bonus pour overlap de tokens (10%)
+      score += titleMatchRatio * 0.1;
+      
+      // 5. Bonus pour tous les tokens présents
+      if (titleMatchRatio === 1.0 && wantTitleTokens.length > 0) {
+        score += 0.05;
+      }
+      
+      // 6. Bonus pour correspondance partielle d'artiste dans les tokens
+      const authorTokenOverlap = wantAuthorTokens.filter(t => 
+        resultAuthorTokens.has(t) || resultTitleTokens.has(t)
+      ).length;
+      if (wantAuthorTokens.length > 0) {
+        score += (authorTokenOverlap / wantAuthorTokens.length) * 0.05;
+      }
 
-      logInfo(reqId, 'scMatch:score', {
-        title: resultTitle,
+      logInfo(reqId, 'sc:match:score', {
+        title: resultTitle.substring(0, 50),
+        author: resultAuthor.substring(0, 30),
         titleScore: titleScore.toFixed(2),
         authorScore: authorScore.toFixed(2),
-        exactAuthorBonus: exactAuthorBonus.toFixed(2),
-        totalScore: totalScore.toFixed(2)
+        titleRatio: titleMatchRatio.toFixed(2),
+        totalScore: score.toFixed(2)
       });
 
-      if (totalScore > bestScore) {
-        bestScore = totalScore;
+      if (score > bestScore) {
+        bestScore = score;
         bestMatch = result;
       }
     }
 
-    // Seuil de confiance ajusté
-    const confidenceThreshold = 0.35;
+    // Seuil de confiance
+    const confidenceThreshold = 0.40;
     
-    if (bestMatch && bestScore > confidenceThreshold) {
-      logInfo(reqId, 'scMatch:found', { 
+    if (bestMatch && bestScore >= confidenceThreshold) {
+      logInfo(reqId, 'sc:match:found', { 
         score: bestScore.toFixed(2), 
         title: bestMatch.title,
         author: bestMatch.author
@@ -574,15 +708,16 @@ async function matchTrackOnSoundCloud(client, requester, track, reqId) {
       return bestMatch;
     }
 
-    logWarn(reqId, 'scMatch:lowScore', { 
-      bestScore: bestScore.toFixed(2),
+    logWarn(reqId, 'sc:match:lowScore', { 
+      bestScore: bestScore ? bestScore.toFixed(2) : 'N/A',
       threshold: confidenceThreshold,
       bestTitle: bestMatch?.title || 'none'
     });
+    
     return null;
     
   } catch (err) {
-    logWarn(reqId, 'scMatch:error', String(err));
+    logError(reqId, 'sc:match:error', err.message);
     return null;
   }
 }
@@ -602,12 +737,15 @@ module.exports = {
     .setDefaultMemberPermissions(PermissionFlagsBits.SendMessages),
 
   async execute(interaction) {
-    const reqId = `req_${Date.now()}`;
+    const reqId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
     const query = interaction.options.getString('query');
     const member = interaction.member;
     const voiceChannel = member?.voice?.channel;
     const gid = interaction.guildId;
 
+    logInfo(reqId, 'execute:start', { query, guild: gid });
+
+    // === VALIDATION SALON VOCAL ===
     if (!voiceChannel) {
       return interaction.reply({ 
         embeds: [buildEmbed(gid, {
@@ -625,7 +763,9 @@ module.exports = {
       const client = interaction.client;
       let player = client.manager.players.get(gid);
 
+      // === CRÉATION/CONNEXION DU PLAYER ===
       if (!player) {
+        logInfo(reqId, 'player:create');
         player = client.manager.players.create({
           guildId: gid,
           voiceChannelId: voiceChannel.id,
@@ -635,99 +775,132 @@ module.exports = {
       }
 
       if (!player.connected) {
+        logInfo(reqId, 'player:connect');
         player.connect({
           setDeaf: true,
           setMute: false
         });
       }
 
-      // ===== PLAYLIST YOUTUBE =====
-      if (YT_PLAYLIST.test(query)) {
+      // ==========================================
+      // === PLAYLISTS ===
+      // ==========================================
+
+      // === PLAYLIST YOUTUBE ===
+      if (PATTERNS.YT_PLAYLIST.test(query)) {
         logInfo(reqId, 'type:ytPlaylist');
+        
         const tracks = await extractYouTubePlaylistTracks(query, reqId);
         
         if (tracks.length === 0) {
           return interaction.editReply({
             embeds: [buildEmbed(gid, {
               type: 'error',
-              title: 'Erreur',
-              description: 'Impossible de récupérer les pistes de la playlist YouTube.'
+              title: 'Playlist YouTube',
+              description: 'Impossible de récupérer les pistes de la playlist.'
             })]
           });
         }
 
+        await interaction.editReply({
+          embeds: [buildEmbed(gid, {
+            type: 'info',
+            title: 'Chargement en cours...',
+            description: `Recherche de ${tracks.length} piste(s) sur SoundCloud...`
+          })]
+        });
+
         let added = 0;
         let failed = 0;
 
-        for (const track of tracks) {
+        for (const [index, track] of tracks.entries()) {
+          logInfo(reqId, 'ytPlaylist:processing', { index: index + 1, total: tracks.length });
+          
           const scTrack = await matchTrackOnSoundCloud(client, interaction.user, track, reqId);
+          
           if (scTrack) {
             player.queue.add(scTrack);
             added++;
           } else {
             failed++;
+            logWarn(reqId, 'ytPlaylist:trackFailed', { track: track.title });
           }
         }
 
-        if (!player.playing && !player.paused) {
+        if (!player.playing && !player.paused && added > 0) {
           player.play();
         }
 
         return interaction.editReply({
           embeds: [buildEmbed(gid, {
-            type: 'success',
-            title: 'Playlist YouTube ajoutée',
-            description: `${added} piste(s) trouvée(s) sur SoundCloud` + 
+            type: added > 0 ? 'success' : 'warning',
+            title: 'Playlist YouTube',
+            description: `✅ ${added} piste(s) ajoutée(s)` + 
               (failed > 0 ? `\n⚠️ ${failed} piste(s) non trouvée(s)` : '')
           })]
         });
       }
 
-      // ===== PLAYLIST/ALBUM SPOTIFY =====
-      if (SP_PLAYLIST_OR_ALBUM.test(query)) {
-        logInfo(reqId, 'type:spPlaylist');
+      // === PLAYLIST/ALBUM SPOTIFY ===
+      if (PATTERNS.SP_PLAYLIST.test(query) || PATTERNS.SP_ALBUM.test(query)) {
+        const isAlbum = PATTERNS.SP_ALBUM.test(query);
+        logInfo(reqId, `type:sp${isAlbum ? 'Album' : 'Playlist'}`);
+        
         const tracks = await extractSpotifyPlaylistTracks(query, reqId);
         
         if (tracks.length === 0) {
           return interaction.editReply({
             embeds: [buildEmbed(gid, {
               type: 'error',
-              title: 'Erreur',
-              description: 'Impossible de récupérer les pistes de la playlist/album Spotify.'
+              title: `${isAlbum ? 'Album' : 'Playlist'} Spotify`,
+              description: 'Impossible de récupérer les pistes.'
             })]
           });
         }
 
+        await interaction.editReply({
+          embeds: [buildEmbed(gid, {
+            type: 'info',
+            title: 'Chargement en cours...',
+            description: `Recherche de ${tracks.length} piste(s) sur SoundCloud...`
+          })]
+        });
+
         let added = 0;
         let failed = 0;
 
-        for (const track of tracks) {
+        for (const [index, track] of tracks.entries()) {
+          logInfo(reqId, 'spPlaylist:processing', { index: index + 1, total: tracks.length });
+          
           const scTrack = await matchTrackOnSoundCloud(client, interaction.user, track, reqId);
+          
           if (scTrack) {
             player.queue.add(scTrack);
             added++;
           } else {
             failed++;
+            logWarn(reqId, 'spPlaylist:trackFailed', { track: track.title });
           }
         }
 
-        if (!player.playing && !player.paused) {
+        if (!player.playing && !player.paused && added > 0) {
           player.play();
         }
 
         return interaction.editReply({
           embeds: [buildEmbed(gid, {
-            type: 'success',
-            title: 'Playlist Spotify ajoutée',
-            description: `${added} piste(s) trouvée(s) sur SoundCloud` +
+            type: added > 0 ? 'success' : 'warning',
+            title: `${isAlbum ? 'Album' : 'Playlist'} Spotify`,
+            description: `✅ ${added} piste(s) ajoutée(s)` +
               (failed > 0 ? `\n⚠️ ${failed} piste(s) non trouvée(s)` : '')
           })]
         });
       }
 
-      // ===== PLAYLIST SOUNDCLOUD =====
-      if (SC_SET.test(query)) {
+      // === PLAYLIST SOUNDCLOUD ===
+      if (PATTERNS.SC_PLAYLIST.test(query)) {
         logInfo(reqId, 'type:scPlaylist');
+        
         const res = await client.manager.search({
           query,
           source: 'soundcloud',
@@ -738,8 +911,8 @@ module.exports = {
           return interaction.editReply({
             embeds: [buildEmbed(gid, {
               type: 'error',
-              title: 'Erreur',
-              description: 'Aucune piste trouvée dans cette playlist SoundCloud.'
+              title: 'Playlist SoundCloud',
+              description: 'Aucune piste trouvée dans cette playlist.'
             })]
           });
         }
@@ -755,238 +928,196 @@ module.exports = {
         return interaction.editReply({
           embeds: [buildEmbed(gid, {
             type: 'success',
-            title: 'Playlist SoundCloud ajoutée',
-            description: `${res.tracks.length} piste(s) ajoutée(s)`
+            title: 'Playlist SoundCloud',
+            description: `✅ ${res.tracks.length} piste(s) ajoutée(s)`
           })]
         });
       }
 
-      // ===== TRACK YOUTUBE =====
-      if (isYouTubeUrl(query) && !YT_PLAYLIST.test(query)) {
+      // ==========================================
+      // === TRACKS INDIVIDUELS ===
+      // ==========================================
+
+      // === TRACK YOUTUBE ===
+      if (PATTERNS.YT_VIDEO.test(query) && !PATTERNS.YT_PLAYLIST.test(query)) {
         logInfo(reqId, 'type:ytTrack');
+        
         const meta = await fetchYouTubeOEmbed(query, reqId);
         
-        if (meta) {
-          const scQuery = `${meta.author} ${meta.title}`.trim();
-          const scResults = await scSearch(client, interaction.user, scQuery, 3, reqId);
-          
-          if (scResults.length > 0) {
-            player.queue.add(scResults[0]);
-            if (!player.playing && !player.paused) {
-              player.play();
-            }
-            return interaction.editReply({
-              embeds: [buildEmbed(gid, {
-                type: 'success',
-                title: 'Piste ajoutée',
-                description: `**${scResults[0].title}**\npar ${scResults[0].author}`
-              })]
-            });
-          }
+        if (!meta || !meta.title) {
+          return interaction.editReply({
+            embeds: [buildEmbed(gid, {
+              type: 'error',
+              title: 'Vidéo YouTube',
+              description: 'Impossible de récupérer les informations de la vidéo.'
+            })]
+          });
         }
         
-        return interaction.editReply({
-          embeds: [buildEmbed(gid, {
-            type: 'error',
-            title: 'Erreur',
-            description: 'Piste YouTube non trouvée sur SoundCloud.'
-          })]
-        });
-      }
-
-      // ===== TRACK SPOTIFY =====
-      if (isSpotifyTrackUrl(query)) {
-        logInfo(reqId, 'type:spTrack');
-        const meta = await fetchSpotifyOG(query, reqId);
+        const scTrack = await matchTrackOnSoundCloud(client, interaction.user, meta, reqId);
         
-        if (meta && meta.title) {
-          const queries = [];
+        if (scTrack) {
+          player.queue.add(scTrack);
           
-          // Query 1 : Artiste + Titre (si artiste présent)
-          if (meta.author) {
-            queries.push(`"${meta.author}" "${meta.title}"`);
-            queries.push(`${meta.author} ${meta.title}`);
-            queries.push(`${meta.author} - ${meta.title}`);
+          if (!player.playing && !player.paused) {
+            player.play();
           }
           
-          // Query 2 : Titre seul
-          queries.push(`"${meta.title}"`);
-          queries.push(meta.title);
-          
-          logInfo(reqId, 'spTrack:queries', { queries, meta });
-          
-          let bestResult = null;
-          let bestScore = 0;
-          
-          for (const searchQuery of queries) {
-            const scResults = await scSearch(client, interaction.user, searchQuery, 10, reqId);
-            
-            if (!scResults || scResults.length === 0) continue;
-            
-            for (const result of scResults) {
-              const resultTitle = result.title || '';
-              const resultAuthor = result.author || '';
-              
-              let score = 0;
-              
-              // 1. Score de titre exact (priorité maximale)
-              const titleScore = jaccard(meta.title, resultTitle);
-              
-              // Bonus si le titre est très proche (>70%)
-              if (titleScore >= 0.7) {
-                score += 0.5;
-              } else {
-                score += titleScore * 0.4;
-              }
-              
-              // 2. Vérification des tokens du titre (critique)
-              const titleTokens = coreTokens(meta.title);
-              const resultTitleTokens = tokenSet(resultTitle);
-              const resultAuthorTokens = tokenSet(resultAuthor);
-              const resultFullTokens = new Set([...resultTitleTokens, ...resultAuthorTokens]);
-              
-              const tokensInResult = titleTokens.filter(t => resultFullTokens.has(t)).length;
-              const tokenRatio = titleTokens.length > 0 ? tokensInResult / titleTokens.length : 0;
-              
-              // Si moins de 70% des tokens du titre sont présents, pénalité sévère
-              if (tokenRatio < 0.7) {
-                score *= 0.3;
-                logInfo(reqId, 'spTrack:lowTokens', {
-                  result: `${resultAuthor} - ${resultTitle}`,
-                  tokenRatio: tokenRatio.toFixed(2),
-                  penalized: true
-                });
-              } else {
-                score += tokenRatio * 0.2;
-              }
-              
-              // 3. Score d'artiste (si présent dans meta)
-              if (meta.author) {
-                const authorScore = jaccard(meta.author, resultAuthor);
-                const normalizedAuthor = normalize(meta.author);
-                const normalizedResultAuthor = normalize(resultAuthor);
-                const normalizedResultTitle = normalize(resultTitle);
-                
-                // Vérifier si l'artiste apparaît quelque part
-                const artistInAuthor = normalizedResultAuthor.includes(normalizedAuthor) || 
-                                      normalizedAuthor.includes(normalizedResultAuthor);
-                const artistInTitle = normalizedResultTitle.includes(normalizedAuthor);
-                
-                if (artistInAuthor) {
-                  score += 0.4; // Bonus majeur
-                } else if (artistInTitle) {
-                  score += 0.2; // Bonus moyen
-                } else {
-                  score += authorScore * 0.1; // Score minimal
-                }
-              }
-              
-              // 4. Bonus pour les correspondances exactes de mots
-              const exactMatches = titleTokens.filter(t => resultTitleTokens.has(t)).length;
-              if (exactMatches === titleTokens.length && titleTokens.length > 0) {
-                score += 0.15; // Tous les mots du titre sont présents
-              }
-              
-              logInfo(reqId, 'spTrack:score', {
-                result: `${resultAuthor} - ${resultTitle}`,
-                titleScore: titleScore.toFixed(2),
-                tokenRatio: tokenRatio.toFixed(2),
-                totalScore: score.toFixed(2)
-              });
-              
-              if (score > bestScore) {
-                bestScore = score;
-                bestResult = result;
-              }
-            }
-          }
-          
-          // Seuil adaptatif basé sur la présence de l'artiste
-          let threshold = 0.4;
-          if (meta.author) {
-            threshold = 0.55; // Plus strict si on a l'artiste
-          }
-          
-          if (bestResult && bestScore >= threshold) {
-            player.queue.add(bestResult);
-            if (!player.playing && !player.paused) {
-              player.play();
-            }
-            return interaction.editReply({
-              embeds: [buildEmbed(gid, {
-                type: 'success',
-                title: 'Piste Spotify ajoutée',
-                description: `**${bestResult.title}**\npar ${bestResult.author}\n\n*Correspondance: ${(bestScore * 100).toFixed(0)}%*`
-              })]
-            });
-          }
-          
-          // Si le score est faible mais qu'on a un résultat, proposer quand même
-          if (bestResult && bestScore >= 0.35) {
-            player.queue.add(bestResult);
-            if (!player.playing && !player.paused) {
-              player.play();
-            }
-            return interaction.editReply({
-              embeds: [buildEmbed(gid, {
-                type: 'warning',
-                title: 'Piste potentielle ajoutée',
-                description: `**${bestResult.title}**\npar ${bestResult.author}\n\n⚠️ *Correspondance moyenne: ${(bestScore * 100).toFixed(0)}%*\nCe n'est peut-être pas la bonne version.`
-              })]
-            });
-          }
-          
-          logWarn(reqId, 'spTrack:lowConfidence', { 
-            bestScore: bestScore.toFixed(2),
-            threshold,
-            bestResult: bestResult?.title,
-            meta
+          return interaction.editReply({
+            embeds: [buildEmbed(gid, {
+              type: 'success',
+              title: 'Piste ajoutée',
+              description: `**${scTrack.title}**\npar ${scTrack.author || 'Artiste inconnu'}`
+            })]
           });
         }
         
         return interaction.editReply({
           embeds: [buildEmbed(gid, {
             type: 'error',
-            title: 'Piste introuvable',
-            description: `Impossible de trouver une correspondance fiable sur SoundCloud pour :\n**${meta?.title || 'Titre inconnu'}**${meta?.author ? `\npar ${meta.author}` : ''}\n\nEssayez une recherche directe.`
+            title: 'Piste YouTube',
+            description: `Non trouvée sur SoundCloud:\n**${meta.title}**${meta.author ? `\npar ${meta.author}` : ''}`
           })]
         });
       }
 
-      // ===== TRACK APPLE MUSIC =====
-      if (isAppleMusicTrackUrl(query)) {
-        logInfo(reqId, 'type:amTrack');
-        const meta = await fetchAppleMusicOG(query, reqId);
+      // === TRACK SPOTIFY ===
+      if (PATTERNS.SP_TRACK.test(query)) {
+        logInfo(reqId, 'type:spTrack');
         
-        if (meta) {
-          const scQuery = `${meta.author} ${meta.title}`.trim();
-          const scResults = await scSearch(client, interaction.user, scQuery, 3, reqId);
+        const meta = await fetchSpotifyOG(query, reqId);
+        
+        if (!meta || !meta.title) {
+          return interaction.editReply({
+            embeds: [buildEmbed(gid, {
+              type: 'error',
+              title: 'Piste Spotify',
+              description: 'Impossible de récupérer les informations de la piste.'
+            })]
+          });
+        }
+        
+        logInfo(reqId, 'spTrack:meta', { title: meta.title, author: meta.author });
+        
+        const scTrack = await matchTrackOnSoundCloud(client, interaction.user, meta, reqId);
+        
+        if (scTrack) {
+          player.queue.add(scTrack);
           
-          if (scResults.length > 0) {
-            player.queue.add(scResults[0]);
-            if (!player.playing && !player.paused) {
-              player.play();
-            }
-            return interaction.editReply({
-              embeds: [buildEmbed(gid, {
-                type: 'success',
-                title: 'Piste ajoutée',
-                description: `**${scResults[0].title}**\npar ${scResults[0].author}`
-              })]
-            });
+          if (!player.playing && !player.paused) {
+            player.play();
           }
+          
+          // Calculer le score de confiance pour l'affichage
+          const titleScore = jaccard(meta.title, scTrack.title);
+          const authorScore = meta.author ? jaccard(meta.author, scTrack.author || '') : 0;
+          const confidence = Math.round((titleScore * 0.6 + authorScore * 0.4) * 100);
+          
+          const embedType = confidence >= 70 ? 'success' : 'warning';
+          const confidenceText = confidence >= 70 ? '' : `\n⚠️ *Correspondance: ${confidence}%*`;
+          
+          return interaction.editReply({
+            embeds: [buildEmbed(gid, {
+              type: embedType,
+              title: 'Piste Spotify ajoutée',
+              description: `**${scTrack.title}**\npar ${scTrack.author || 'Artiste inconnu'}${confidenceText}`
+            })]
+          });
         }
         
         return interaction.editReply({
           embeds: [buildEmbed(gid, {
             type: 'error',
-            title: 'Erreur',
-            description: 'Piste Apple Music non trouvée sur SoundCloud.'
+            title: 'Piste Spotify',
+            description: `Non trouvée sur SoundCloud:\n**${meta.title}**${meta.author ? `\npar ${meta.author}` : ''}\n\n💡 Essayez une recherche directe.`
           })]
         });
       }
 
-      // ===== RECHERCHE DIRECTE =====
+      // === TRACK APPLE MUSIC ===
+      if (PATTERNS.AM_TRACK.test(query)) {
+        logInfo(reqId, 'type:amTrack');
+        
+        const meta = await fetchAppleMusicOG(query, reqId);
+        
+        if (!meta || !meta.title) {
+          return interaction.editReply({
+            embeds: [buildEmbed(gid, {
+              type: 'error',
+              title: 'Piste Apple Music',
+              description: 'Impossible de récupérer les informations de la piste.'
+            })]
+          });
+        }
+        
+        const scTrack = await matchTrackOnSoundCloud(client, interaction.user, meta, reqId);
+        
+        if (scTrack) {
+          player.queue.add(scTrack);
+          
+          if (!player.playing && !player.paused) {
+            player.play();
+          }
+          
+          return interaction.editReply({
+            embeds: [buildEmbed(gid, {
+              type: 'success',
+              title: 'Piste Apple Music ajoutée',
+              description: `**${scTrack.title}**\npar ${scTrack.author || 'Artiste inconnu'}`
+            })]
+          });
+        }
+        
+        return interaction.editReply({
+          embeds: [buildEmbed(gid, {
+            type: 'error',
+            title: 'Piste Apple Music',
+            description: `Non trouvée sur SoundCloud:\n**${meta.title}**${meta.author ? `\npar ${meta.author}` : ''}`
+          })]
+        });
+      }
+
+      // === TRACK SOUNDCLOUD ===
+      if (PATTERNS.SC_TRACK.test(query) && !PATTERNS.SC_PLAYLIST.test(query)) {
+        logInfo(reqId, 'type:scTrack');
+        
+        const res = await client.manager.search({
+          query,
+          source: 'soundcloud',
+          requester: interaction.user
+        });
+
+        if (!res?.tracks || res.tracks.length === 0) {
+          return interaction.editReply({
+            embeds: [buildEmbed(gid, {
+              type: 'error',
+              title: 'Piste SoundCloud',
+              description: 'Piste introuvable.'
+            })]
+          });
+        }
+
+        player.queue.add(res.tracks[0]);
+
+        if (!player.playing && !player.paused) {
+          player.play();
+        }
+
+        return interaction.editReply({
+          embeds: [buildEmbed(gid, {
+            type: 'success',
+            title: 'Piste SoundCloud ajoutée',
+            description: `**${res.tracks[0].title}**\npar ${res.tracks[0].author || 'Artiste inconnu'}`
+          })]
+        });
+      }
+
+      // ==========================================
+      // === RECHERCHE DIRECTE (FALLBACK) ===
+      // ==========================================
+      
+      logInfo(reqId, 'type:directSearch');
+      
       const res = await client.manager.search({
         query,
         source: 'soundcloud',
@@ -997,8 +1128,8 @@ module.exports = {
         return interaction.editReply({
           embeds: [buildEmbed(gid, {
             type: 'error',
-            title: 'Erreur',
-            description: 'Aucun résultat trouvé.'
+            title: 'Aucun résultat',
+            description: `Aucune piste trouvée pour: **${query}**`
           })]
         });
       }
@@ -1013,19 +1144,23 @@ module.exports = {
         embeds: [buildEmbed(gid, {
           type: 'success',
           title: 'Piste ajoutée',
-          description: `**${res.tracks[0].title}**\npar ${res.tracks[0].author}`
+          description: `**${res.tracks[0].title}**\npar ${res.tracks[0].author || 'Artiste inconnu'}`
         })]
       });
 
     } catch (err) {
-      logWarn(reqId, 'execute:error', String(err));
-      console.error('[DEBUG] Full error:', err);
+      logError(reqId, 'execute:criticalError', err.message);
+      console.error(`[${reqId}] Stack trace:`, err.stack);
+      
       return interaction.editReply({
         embeds: [buildEmbed(gid, {
           type: 'error',
-          title: 'Erreur',
-          description: 'Une erreur est survenue lors de l\'exécution.'
+          title: 'Erreur critique',
+          description: 'Une erreur inattendue s\'est produite. Veuillez réessayer.'
         })]
+      }).catch(() => {
+        // Si l'interaction a expiré, on ne peut rien faire
+        logError(reqId, 'execute:replyFailed', 'Interaction expired');
       });
     }
   }
