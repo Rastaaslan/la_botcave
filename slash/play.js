@@ -562,12 +562,58 @@ async function matchTrackOnSoundCloud(client, requester, track, reqId) {
     const query = track.query || `${track.author} ${track.title}`.trim();
     logInfo(reqId, 'sc:match:start', { query });
 
-    // Stratégies de recherche multiples
-    const strategies = [
-      { name: 'exact', query: `"${track.author}" "${track.title}"`, limit: 5 },
-      { name: 'standard', query: `${track.author} ${track.title}`, limit: 8 },
-      { name: 'title-only', query: track.title, limit: 10 }
-    ];
+    // Détection de mots-clés contextuels dans le titre
+    const contextKeywords = /\b(naruto|pokemon|zelda|mario|final fantasy|studio ghibli|howl|spirited away|piano|orchestr|cover|version|remix|acoustic|live|remaster)\b/i;
+    const hasContext = contextKeywords.test(track.title);
+    
+    // Détecter si le titre est "générique" (mots communs)
+    const genericTitles = /\b(blue bird|forever young|imagine|yesterday|hello|sorry|stay|closer|perfect|beautiful)\b/i;
+    const isGenericTitle = genericTitles.test(normalize(track.title));
+    
+    logInfo(reqId, 'sc:match:analysis', { 
+      hasContext, 
+      isGenericTitle,
+      titleLength: track.title.length 
+    });
+
+    // Stratégies de recherche adaptatives
+    const strategies = [];
+    
+    // Stratégie 1 : Recherche exacte (toujours)
+    if (track.author && track.title) {
+      strategies.push({ 
+        name: 'exact', 
+        query: `"${track.author}" "${track.title}"`, 
+        limit: 5 
+      });
+    }
+    
+    // Stratégie 2 : Avec contexte si présent
+    if (hasContext && track.author) {
+      strategies.push({ 
+        name: 'with-context', 
+        query: `${track.author} ${track.title}`, 
+        limit: 8 
+      });
+    }
+    
+    // Stratégie 3 : Standard (toujours)
+    if (track.author && track.title) {
+      strategies.push({ 
+        name: 'standard', 
+        query: `${track.author} ${track.title}`, 
+        limit: 8 
+      });
+    }
+    
+    // Stratégie 4 : Titre seul (seulement si pas générique)
+    if (!isGenericTitle || !track.author) {
+      strategies.push({ 
+        name: 'title-only', 
+        query: track.title, 
+        limit: 10 
+      });
+    }
     
     let allResults = [];
     
@@ -606,7 +652,7 @@ async function matchTrackOnSoundCloud(client, requester, track, reqId) {
     
     logInfo(reqId, 'sc:match:candidates', { total: uniqueResults.length });
 
-    // Scoring amélioré
+    // Scoring amélioré avec contexte
     const wantTitleTokens = coreTokens(track.title);
     const wantAuthorTokens = coreTokens(track.author);
     const normalizedWantAuthor = normalize(track.author);
@@ -635,34 +681,63 @@ async function matchTrackOnSoundCloud(client, requester, track, reqId) {
       const titleOverlap = wantTitleTokens.filter(t => resultTitleTokens.has(t)).length;
       const titleMatchRatio = wantTitleTokens.length > 0 ? titleOverlap / wantTitleTokens.length : 0;
       
+      // 3. Vérifier présence des mots-clés contextuels
+      let contextMatch = false;
+      if (hasContext) {
+        const contextWords = track.title.match(contextKeywords);
+        if (contextWords) {
+          contextMatch = contextWords.some(word => 
+            normalizedResultTitle.includes(normalize(word))
+          );
+        }
+      }
+      
       // Filtrer les résultats peu pertinents
-      if (!hasArtist && titleMatchRatio < 0.5) {
+      // Plus strict si titre générique
+      const minTitleRatio = isGenericTitle ? 0.7 : 0.5;
+      
+      if (!hasArtist && titleMatchRatio < minTitleRatio) {
         logInfo(reqId, 'sc:match:filtered', { 
           title: resultTitle,
           reason: 'low_relevance',
           artistMatch: hasArtist,
+          titleRatio: titleMatchRatio.toFixed(2),
+          threshold: minTitleRatio
+        });
+        continue;
+      }
+      
+      // Si titre générique ET mauvais artiste, filtrer
+      if (isGenericTitle && !hasArtist && titleMatchRatio < 0.9) {
+        logInfo(reqId, 'sc:match:filtered', { 
+          title: resultTitle,
+          reason: 'generic_title_no_artist',
           titleRatio: titleMatchRatio.toFixed(2)
         });
         continue;
       }
       
-      // === CALCUL DU SCORE ===
+      // === CALCUL DU SCORE ADAPTATIF ===
       
       let score = 0;
       
-      // 1. Score de titre (50% du poids)
+      // Pondération adaptative selon le contexte
+      let titleWeight = isGenericTitle ? 0.35 : 0.5;
+      let authorWeight = isGenericTitle ? 0.35 : 0.25;
+      
+      // 1. Score de titre
       const titleScore = jaccard(track.title, resultTitle);
-      score += titleScore * 0.5;
+      score += titleScore * titleWeight;
       
-      // 2. Score d'artiste (25% du poids)
+      // 2. Score d'artiste
       const authorScore = jaccard(track.author, resultAuthor);
-      score += authorScore * 0.25;
+      score += authorScore * authorWeight;
       
-      // 3. Bonus pour correspondance exacte d'artiste (15%)
+      // 3. Bonus pour correspondance exacte d'artiste (variable)
       if (authorInAuthor) {
-        score += 0.15;
+        score += isGenericTitle ? 0.20 : 0.15;
       } else if (authorInTitle) {
-        score += 0.08;
+        score += isGenericTitle ? 0.12 : 0.08;
       }
       
       // 4. Bonus pour overlap de tokens (10%)
@@ -680,6 +755,15 @@ async function matchTrackOnSoundCloud(client, requester, track, reqId) {
       if (wantAuthorTokens.length > 0) {
         score += (authorTokenOverlap / wantAuthorTokens.length) * 0.05;
       }
+      
+      // 7. NOUVEAU : Bonus contexte
+      if (hasContext && contextMatch) {
+        score += 0.10;
+        logInfo(reqId, 'sc:match:contextBonus', { 
+          title: resultTitle.substring(0, 50),
+          bonus: 0.10 
+        });
+      }
 
       logInfo(reqId, 'sc:match:score', {
         title: resultTitle.substring(0, 50),
@@ -687,7 +771,8 @@ async function matchTrackOnSoundCloud(client, requester, track, reqId) {
         titleScore: titleScore.toFixed(2),
         authorScore: authorScore.toFixed(2),
         titleRatio: titleMatchRatio.toFixed(2),
-        totalScore: score.toFixed(2)
+        totalScore: score.toFixed(2),
+        flags: `${isGenericTitle ? 'GENERIC' : ''}${hasContext ? ' CONTEXT' : ''}`
       });
 
       if (score > bestScore) {
@@ -696,8 +781,23 @@ async function matchTrackOnSoundCloud(client, requester, track, reqId) {
       }
     }
 
-    // Seuil de confiance
-    const confidenceThreshold = 0.40;
+    // Seuil de confiance adaptatif
+    let confidenceThreshold = 0.38; // Légèrement abaissé
+    
+    // Plus strict pour les titres génériques
+    if (isGenericTitle) {
+      confidenceThreshold = 0.50;
+    }
+    
+    // Moins strict si titre très spécifique (long avec contexte)
+    if (hasContext && track.title.length > 30) {
+      confidenceThreshold = 0.35;
+    }
+    
+    logInfo(reqId, 'sc:match:threshold', { 
+      value: confidenceThreshold,
+      reason: isGenericTitle ? 'generic_title' : hasContext ? 'specific_title' : 'standard'
+    });
     
     if (bestMatch && bestScore >= confidenceThreshold) {
       logInfo(reqId, 'sc:match:found', { 
