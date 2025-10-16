@@ -206,7 +206,7 @@ async function fetchAppleMusicOG(url, reqId) {
 }
 
 /* ========================= 
-   NOUVEAU: Extraction playlists YouTube 
+   Extraction playlists YouTube 
 ========================= */
 async function extractYouTubePlaylistTracks(url, reqId) {
   logInfo(reqId, 'ytPlaylist:start', { url });
@@ -217,10 +217,9 @@ async function extractYouTubePlaylistTracks(url, reqId) {
       return [];
     }
 
-    // Récupération de la page HTML de la playlist
     const resp = await fetch(`https://www.youtube.com/playlist?list=${playlistId}`, {
       headers: { 
-        'User-Agent': 'Mozilla/5.0',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept-Language': 'en-US,en;q=0.9'
       }
     });
@@ -231,8 +230,6 @@ async function extractYouTubePlaylistTracks(url, reqId) {
     }
 
     const html = await resp.text();
-    
-    // Extraction des données JSON embarquées dans la page
     const match = html.match(/var ytInitialData = ({.+?});/);
     if (!match) {
       logWarn(reqId, 'ytPlaylist:noData');
@@ -282,12 +279,11 @@ function extractYouTubePlaylistId(url) {
 }
 
 /* ========================= 
-   NOUVEAU: Extraction playlists Spotify 
+   Extraction playlists Spotify 
 ========================= */
 async function extractSpotifyPlaylistTracks(url, reqId) {
   logInfo(reqId, 'spPlaylist:start', { url });
   try {
-    // Extraction de l'ID de la playlist/album
     const match = url.match(/(?:playlist|album)\/([A-Za-z0-9]+)/);
     if (!match) {
       logWarn(reqId, 'spPlaylist:noId');
@@ -296,12 +292,12 @@ async function extractSpotifyPlaylistTracks(url, reqId) {
 
     const type = url.includes('/playlist/') ? 'playlist' : 'album';
     
-    // Récupération de la page HTML
-    const resp = await fetch(url, {
+    const resp = await fetch(url, { 
       headers: { 
-        'User-Agent': 'Mozilla/5.0',
-        'Accept': 'text/html,application/xhtml+xml'
-      }
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9',
+      } 
     });
 
     if (!resp.ok) {
@@ -310,42 +306,57 @@ async function extractSpotifyPlaylistTracks(url, reqId) {
     }
 
     const html = await resp.text();
-    
-    // Extraction des données JSON embarquées
-    const match2 = html.match(/<script id="__NEXT_DATA__" type="application\/json">({.+?})<\/script>/);
-    if (!match2) {
-      logWarn(reqId, 'spPlaylist:noData');
-      return [];
-    }
-
-    const data = JSON.parse(match2[1]);
-    let items = [];
-
-    if (type === 'playlist') {
-      items = data?.props?.pageProps?.state?.data?.entity?.tracks?.items || [];
-    } else {
-      items = data?.props?.pageProps?.state?.data?.entity?.tracks?.items || [];
-    }
-
     const tracks = [];
-    for (const item of items) {
-      const track = item?.track || item;
-      if (!track) continue;
-
-      const title = track.name || '';
-      const artists = track.artists?.map(a => a.name).join(', ') || '';
-
-      if (title) {
+    
+    // Regex pour extraire les tracks du HTML
+    const trackPattern = /"name":"([^"]+)","artists":\[({[^}]+}(?:,{[^}]+})*)\]/g;
+    let match2;
+    
+    while ((match2 = trackPattern.exec(html)) !== null) {
+      const title = match2[1];
+      const artistsJson = `[${match2[2]}]`;
+      
+      try {
+        const artistsData = JSON.parse(artistsJson);
+        const artists = artistsData.map(a => a.name).join(', ');
+        
         tracks.push({
           title: stripTitleNoise(title),
           author: stripArtistNoise(artists),
           query: `${artists} ${title}`.trim()
         });
+      } catch (e) {
+        logWarn(reqId, 'spPlaylist:parseTrack', { error: String(e) });
+      }
+    }
+
+    // Fallback : chercher les données JSON-LD
+    if (tracks.length === 0) {
+      const scriptMatch = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>(\{[^<]+\})<\/script>/);
+      if (scriptMatch) {
+        try {
+          const jsonData = JSON.parse(scriptMatch[1]);
+          const trackList = jsonData?.track?.itemListElement || [];
+          
+          for (const item of trackList) {
+            const track = item?.item;
+            if (track?.name) {
+              tracks.push({
+                title: stripTitleNoise(track.name),
+                author: stripArtistNoise(track?.byArtist?.name || ''),
+                query: `${track?.byArtist?.name || ''} ${track.name}`.trim()
+              });
+            }
+          }
+        } catch (e) {
+          logWarn(reqId, 'spPlaylist:parseJSON', { error: String(e) });
+        }
       }
     }
 
     logInfo(reqId, 'spPlaylist:extracted', { count: tracks.length });
     return tracks;
+    
   } catch (err) {
     logWarn(reqId, 'spPlaylist:error', String(err));
     return [];
@@ -353,14 +364,13 @@ async function extractSpotifyPlaylistTracks(url, reqId) {
 }
 
 /* ========================= 
-   NOUVEAU: Matching via SoundCloud 
+   Matching via SoundCloud 
 ========================= */
 async function matchTrackOnSoundCloud(client, requester, track, reqId) {
   const query = track.query || `${track.author} ${track.title}`.trim();
   logInfo(reqId, 'scMatch:start', { query });
 
   try {
-    // Recherche sur SoundCloud
     const results = await scSearch(client, requester, query, 5, reqId);
     
     if (!results || results.length === 0) {
@@ -368,7 +378,6 @@ async function matchTrackOnSoundCloud(client, requester, track, reqId) {
       return null;
     }
 
-    // Score et sélection du meilleur résultat
     const wantTokens = coreTokens(`${track.title} ${track.author}`);
     let bestMatch = null;
     let bestScore = 0;
@@ -420,10 +429,15 @@ module.exports = {
     const query = interaction.options.getString('query');
     const member = interaction.member;
     const voiceChannel = member?.voice?.channel;
+    const gid = interaction.guildId;
 
     if (!voiceChannel) {
       return interaction.reply({ 
-        content: '❌ Vous devez être dans un salon vocal!', 
+        embeds: [buildEmbed(gid, {
+          type: 'error',
+          title: 'Erreur',
+          description: 'Vous devez être dans un salon vocal!'
+        })],
         ephemeral: true 
       });
     }
@@ -432,19 +446,22 @@ module.exports = {
 
     try {
       const client = interaction.client;
-      let player = client.manager.players.get(interaction.guildId);
+      let player = client.manager.players.get(gid);
 
       if (!player) {
         player = client.manager.players.create({
-          guildId: interaction.guildId,
-          voiceChannelId: voiceChannel.id,  // Attention: voiceChannelId, pas voiceChannel
-          textChannelId: interaction.channelId,  // textChannelId, pas textChannel
+          guildId: gid,
+          voiceChannelId: voiceChannel.id,
+          textChannelId: interaction.channelId,
           volume: 50
         });
       }
 
-      if (player.state !== 'CONNECTED') {
-        player.connect();
+      if (!player.connected) {
+        player.connect({
+          setDeaf: true,
+          setMute: false
+        });
       }
 
       // ===== PLAYLIST YOUTUBE =====
@@ -453,7 +470,13 @@ module.exports = {
         const tracks = await extractYouTubePlaylistTracks(query, reqId);
         
         if (tracks.length === 0) {
-          return interaction.editReply('❌ Impossible de récupérer les pistes de la playlist YouTube.');
+          return interaction.editReply({
+            embeds: [buildEmbed(gid, {
+              type: 'error',
+              title: 'Erreur',
+              description: 'Impossible de récupérer les pistes de la playlist YouTube.'
+            })]
+          });
         }
 
         let added = 0;
@@ -473,10 +496,14 @@ module.exports = {
           player.play();
         }
 
-        return interaction.editReply(
-          `✅ **Playlist YouTube ajoutée**: ${added} piste(s) trouvée(s) sur SoundCloud\n` +
-          (failed > 0 ? `⚠️ ${failed} piste(s) non trouvée(s)` : '')
-        );
+        return interaction.editReply({
+          embeds: [buildEmbed(gid, {
+            type: 'success',
+            title: 'Playlist YouTube ajoutée',
+            description: `${added} piste(s) trouvée(s) sur SoundCloud` + 
+              (failed > 0 ? `\n⚠️ ${failed} piste(s) non trouvée(s)` : '')
+          })]
+        });
       }
 
       // ===== PLAYLIST/ALBUM SPOTIFY =====
@@ -485,7 +512,13 @@ module.exports = {
         const tracks = await extractSpotifyPlaylistTracks(query, reqId);
         
         if (tracks.length === 0) {
-          return interaction.editReply('❌ Impossible de récupérer les pistes de la playlist/album Spotify.');
+          return interaction.editReply({
+            embeds: [buildEmbed(gid, {
+              type: 'error',
+              title: 'Erreur',
+              description: 'Impossible de récupérer les pistes de la playlist/album Spotify.'
+            })]
+          });
         }
 
         let added = 0;
@@ -505,10 +538,14 @@ module.exports = {
           player.play();
         }
 
-        return interaction.editReply(
-          `✅ **Playlist/Album Spotify ajouté**: ${added} piste(s) trouvée(s) sur SoundCloud\n` +
-          (failed > 0 ? `⚠️ ${failed} piste(s) non trouvée(s)` : '')
-        );
+        return interaction.editReply({
+          embeds: [buildEmbed(gid, {
+            type: 'success',
+            title: 'Playlist Spotify ajoutée',
+            description: `${added} piste(s) trouvée(s) sur SoundCloud` +
+              (failed > 0 ? `\n⚠️ ${failed} piste(s) non trouvée(s)` : '')
+          })]
+        });
       }
 
       // ===== PLAYLIST SOUNDCLOUD =====
@@ -521,7 +558,13 @@ module.exports = {
         });
 
         if (!res?.tracks || res.tracks.length === 0) {
-          return interaction.editReply('❌ Aucune piste trouvée dans cette playlist SoundCloud.');
+          return interaction.editReply({
+            embeds: [buildEmbed(gid, {
+              type: 'error',
+              title: 'Erreur',
+              description: 'Aucune piste trouvée dans cette playlist SoundCloud.'
+            })]
+          });
         }
 
         for (const track of res.tracks) {
@@ -532,13 +575,17 @@ module.exports = {
           player.play();
         }
 
-        return interaction.editReply(
-          `✅ **Playlist SoundCloud ajoutée**: ${res.tracks.length} piste(s)`
-        );
+        return interaction.editReply({
+          embeds: [buildEmbed(gid, {
+            type: 'success',
+            title: 'Playlist SoundCloud ajoutée',
+            description: `${res.tracks.length} piste(s) ajoutée(s)`
+          })]
+        });
       }
 
       // ===== TRACK YOUTUBE =====
-      if (isYouTubeUrl(query)) {
+      if (isYouTubeUrl(query) && !YT_PLAYLIST.test(query)) {
         logInfo(reqId, 'type:ytTrack');
         const meta = await fetchYouTubeOEmbed(query, reqId);
         
@@ -551,13 +598,23 @@ module.exports = {
             if (!player.playing && !player.paused) {
               player.play();
             }
-            return interaction.editReply(
-              `✅ **Ajouté à la file**: ${scResults[0].title}`
-            );
+            return interaction.editReply({
+              embeds: [buildEmbed(gid, {
+                type: 'success',
+                title: 'Piste ajoutée',
+                description: `**${scResults[0].title}**\npar ${scResults[0].author}`
+              })]
+            });
           }
         }
         
-        return interaction.editReply('❌ Piste YouTube non trouvée sur SoundCloud.');
+        return interaction.editReply({
+          embeds: [buildEmbed(gid, {
+            type: 'error',
+            title: 'Erreur',
+            description: 'Piste YouTube non trouvée sur SoundCloud.'
+          })]
+        });
       }
 
       // ===== TRACK SPOTIFY =====
@@ -574,13 +631,23 @@ module.exports = {
             if (!player.playing && !player.paused) {
               player.play();
             }
-            return interaction.editReply(
-              `✅ **Ajouté à la file**: ${scResults[0].title}`
-            );
+            return interaction.editReply({
+              embeds: [buildEmbed(gid, {
+                type: 'success',
+                title: 'Piste ajoutée',
+                description: `**${scResults[0].title}**\npar ${scResults[0].author}`
+              })]
+            });
           }
         }
         
-        return interaction.editReply('❌ Piste Spotify non trouvée sur SoundCloud.');
+        return interaction.editReply({
+          embeds: [buildEmbed(gid, {
+            type: 'error',
+            title: 'Erreur',
+            description: 'Piste Spotify non trouvée sur SoundCloud.'
+          })]
+        });
       }
 
       // ===== TRACK APPLE MUSIC =====
@@ -597,13 +664,23 @@ module.exports = {
             if (!player.playing && !player.paused) {
               player.play();
             }
-            return interaction.editReply(
-              `✅ **Ajouté à la file**: ${scResults[0].title}`
-            );
+            return interaction.editReply({
+              embeds: [buildEmbed(gid, {
+                type: 'success',
+                title: 'Piste ajoutée',
+                description: `**${scResults[0].title}**\npar ${scResults[0].author}`
+              })]
+            });
           }
         }
         
-        return interaction.editReply('❌ Piste Apple Music non trouvée sur SoundCloud.');
+        return interaction.editReply({
+          embeds: [buildEmbed(gid, {
+            type: 'error',
+            title: 'Erreur',
+            description: 'Piste Apple Music non trouvée sur SoundCloud.'
+          })]
+        });
       }
 
       // ===== RECHERCHE DIRECTE =====
@@ -614,7 +691,13 @@ module.exports = {
       });
 
       if (!res?.tracks || res.tracks.length === 0) {
-        return interaction.editReply('❌ Aucun résultat trouvé.');
+        return interaction.editReply({
+          embeds: [buildEmbed(gid, {
+            type: 'error',
+            title: 'Erreur',
+            description: 'Aucun résultat trouvé.'
+          })]
+        });
       }
 
       player.queue.add(res.tracks[0]);
@@ -623,13 +706,24 @@ module.exports = {
         player.play();
       }
 
-      return interaction.editReply(
-        `✅ **Ajouté à la file**: ${res.tracks[0].title}`
-      );
+      return interaction.editReply({
+        embeds: [buildEmbed(gid, {
+          type: 'success',
+          title: 'Piste ajoutée',
+          description: `**${res.tracks[0].title}**\npar ${res.tracks[0].author}`
+        })]
+      });
 
     } catch (err) {
       logWarn(reqId, 'execute:error', String(err));
-      return interaction.editReply('❌ Une erreur est survenue lors de l\'exécution.');
+      console.error('[DEBUG] Full error:', err);
+      return interaction.editReply({
+        embeds: [buildEmbed(gid, {
+          type: 'error',
+          title: 'Erreur',
+          description: 'Une erreur est survenue lors de l\'exécution.'
+        })]
+      });
     }
   }
 };
