@@ -407,22 +407,73 @@ async function matchTrackOnSoundCloud(client, requester, track, reqId) {
   logInfo(reqId, 'scMatch:start', { query });
 
   try {
-    const results = await scSearch(client, requester, query, 5, reqId);
+    // Stratégie 1 : Recherche exacte avec guillemets (artiste + titre)
+    let results = await scSearch(client, requester, `"${track.author}" "${track.title}"`, 5, reqId);
+    
+    // Stratégie 2 : Si pas de résultats, essayer sans guillemets mais avec artiste et titre
+    if (!results || results.length === 0) {
+      logInfo(reqId, 'scMatch:tryStrategy2');
+      results = await scSearch(client, requester, `${track.author} ${track.title}`, 5, reqId);
+    }
+    
+    // Stratégie 3 : Si toujours rien, essayer juste le titre
+    if (!results || results.length === 0) {
+      logInfo(reqId, 'scMatch:tryStrategy3');
+      results = await scSearch(client, requester, track.title, 5, reqId);
+    }
     
     if (!results || results.length === 0) {
       logWarn(reqId, 'scMatch:noResults', { query });
       return null;
     }
 
+    // Scoring amélioré avec filtres stricts
     const wantTokens = coreTokens(`${track.title} ${track.author}`);
     let bestMatch = null;
     let bestScore = 0;
 
     for (const result of results) {
-      const titleScore = jaccard(track.title, result.title || '');
-      const authorScore = jaccard(track.author, result.author || '');
-      const boost = dynamicBoostGeneric(result.title, result.author, wantTokens);
-      const totalScore = titleScore * 0.6 + authorScore * 0.3 + boost;
+      const resultTitle = result.title || '';
+      const resultAuthor = result.author || '';
+      
+      // Filtre 1 : Vérifier que l'artiste apparaît dans le résultat (titre ou auteur)
+      const normalizedAuthor = normalize(track.author);
+      const authorInResult = normalize(resultAuthor).includes(normalizedAuthor) || 
+                            normalize(resultTitle).includes(normalizedAuthor);
+      
+      // Filtre 2 : Vérifier qu'au moins 50% des mots du titre sont présents
+      const titleTokens = coreTokens(track.title);
+      const resultTitleTokens = tokenSet(resultTitle);
+      const titleOverlap = titleTokens.filter(t => resultTitleTokens.has(t)).length;
+      const titleMatchRatio = titleTokens.length > 0 ? titleOverlap / titleTokens.length : 0;
+      
+      // Si l'artiste n'apparaît pas ET moins de 50% du titre matche, ignorer
+      if (!authorInResult && titleMatchRatio < 0.5) {
+        logInfo(reqId, 'scMatch:filtered', { 
+          title: resultTitle,
+          reason: 'artist_and_title_mismatch'
+        });
+        continue;
+      }
+      
+      // Calcul du score avec pondération ajustée
+      const titleScore = jaccard(track.title, resultTitle);
+      const authorScore = jaccard(track.author, resultAuthor);
+      const boost = dynamicBoostGeneric(resultTitle, resultAuthor, wantTokens);
+      
+      // Bonus si l'artiste exact est trouvé
+      const exactAuthorBonus = authorInResult ? 0.15 : 0;
+      
+      // Pondération ajustée : privilégier le titre
+      const totalScore = titleScore * 0.5 + authorScore * 0.25 + boost + exactAuthorBonus;
+
+      logInfo(reqId, 'scMatch:score', {
+        title: resultTitle,
+        titleScore: titleScore.toFixed(2),
+        authorScore: authorScore.toFixed(2),
+        exactAuthorBonus: exactAuthorBonus.toFixed(2),
+        totalScore: totalScore.toFixed(2)
+      });
 
       if (totalScore > bestScore) {
         bestScore = totalScore;
@@ -430,16 +481,25 @@ async function matchTrackOnSoundCloud(client, requester, track, reqId) {
       }
     }
 
-    if (bestMatch && bestScore > 0.3) {
+    // Seuil de confiance ajusté
+    const confidenceThreshold = 0.35;
+    
+    if (bestMatch && bestScore > confidenceThreshold) {
       logInfo(reqId, 'scMatch:found', { 
         score: bestScore.toFixed(2), 
-        title: bestMatch.title 
+        title: bestMatch.title,
+        author: bestMatch.author
       });
       return bestMatch;
     }
 
-    logWarn(reqId, 'scMatch:lowScore', { bestScore: bestScore.toFixed(2) });
+    logWarn(reqId, 'scMatch:lowScore', { 
+      bestScore: bestScore.toFixed(2),
+      threshold: confidenceThreshold,
+      bestTitle: bestMatch?.title || 'none'
+    });
     return null;
+    
   } catch (err) {
     logWarn(reqId, 'scMatch:error', String(err));
     return null;
