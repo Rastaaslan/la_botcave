@@ -479,8 +479,33 @@ async function extractYouTubePlaylistTracks(url, reqId) {
       hasContents: !!data?.contents,
       hasSidebar: !!data?.sidebar,
       hasContinuation: !!data?.continuationContents,
+      hasAlerts: !!data?.alerts,
       contentsKeys: data?.contents ? Object.keys(data.contents) : null
     });
+    
+    // Vérifier si YouTube retourne des alertes (playlist privée, supprimée, etc.)
+    if (data?.alerts) {
+      const alertText = data.alerts
+        .map(a => a?.alertRenderer?.text?.simpleText || a?.alertRenderer?.text?.runs?.[0]?.text)
+        .filter(Boolean)
+        .join(' ');
+      
+      logWarn(reqId, 'yt:playlist:alert', { alertText });
+      
+      // Détecter le type d'alerte
+      if (/private/i.test(alertText) || /privée/i.test(alertText)) {
+        return { error: 'private' };
+      }
+      if (/not found/i.test(alertText) || /introuvable/i.test(alertText)) {
+        return { error: 'not_found' };
+      }
+      if (/deleted/i.test(alertText) || /supprimée/i.test(alertText)) {
+        return { error: 'not_found' };
+      }
+      
+      // Alerte générique
+      return { error: 'no_contents', message: alertText };
+    }
     
     return extractTracksFromYTData(data, reqId);
     
