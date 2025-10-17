@@ -579,13 +579,20 @@ module.exports = {
 
       // ===== TRACK SPOTIFY =====
       if (PATTERNS.SP_TRACK.test(query)) {
+        logInfo(reqId, 'type:spTrack');
+        
         const meta = await fetchSpotifyOG(query, reqId);
-        if (!meta) {
+        logInfo(reqId, 'spTrack:meta', { meta });
+        
+        if (!meta || !meta.title) {
           return interaction.editReply({
             embeds: [buildEmbed(gid, { type: 'error', title: 'Spotify', description: '❌ Infos introuvables.' })]
           });
         }
+        
         const scTrack = await matchTrackOnSoundCloud(client, interaction.user, meta, reqId);
+        logInfo(reqId, 'spTrack:scResult', { found: !!scTrack });
+        
         if (scTrack) {
           player.queue.add(scTrack);
           if (!player.playing && !player.paused) player.play();
@@ -597,8 +604,13 @@ module.exports = {
             })]
           });
         }
+        
         return interaction.editReply({
-          embeds: [buildEmbed(gid, { type: 'error', title: 'Spotify', description: '❌ Non trouvée sur SoundCloud.' })]
+          embeds: [buildEmbed(gid, { 
+            type: 'error', 
+            title: 'Spotify', 
+            description: `❌ Non trouvée sur SoundCloud.\n\n**${meta.title}**${meta.author ? `\npar ${meta.author}` : ''}` 
+          })]
         });
       }
 
