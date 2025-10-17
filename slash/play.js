@@ -492,20 +492,32 @@ async function extractYouTubePlaylistTracks(url, reqId) {
 // Fonction helper pour extraire les tracks
 function extractTracksFromYTData(data, reqId) {
   try {
-    const contents = data?.contents?.twoColumnBrowseResultsRenderer?.tabs?.[0]
+    // Tentative 1 : Structure standard
+    let contents = data?.contents?.twoColumnBrowseResultsRenderer?.tabs?.[0]
       ?.tabRenderer?.content?.sectionListRenderer?.contents?.[0]
       ?.itemSectionRenderer?.contents?.[0]?.playlistVideoListRenderer?.contents;
 
+    // Tentative 2 : Structure alternative (sidebar)
     if (!contents) {
-      // Tentative d'un autre chemin (structure peut varier)
-      const altContents = data?.sidebar?.playlistSidebarRenderer?.items?.[0]
-        ?.playlistSidebarPrimaryInfoRenderer?.stats;
+      contents = data?.sidebar?.playlistSidebarRenderer?.items?.[0]
+        ?.playlistSidebarPrimaryInfoRenderer?.contents;
       
-      if (altContents) {
-        logWarn(reqId, 'yt:playlist:altStructure');
+      if (contents) {
+        logInfo(reqId, 'yt:playlist:altStructure', 'sidebar');
       }
+    }
+    
+    // Tentative 3 : Structure avec continuationContents
+    if (!contents) {
+      contents = data?.continuationContents?.playlistVideoListContinuation?.contents;
       
-      logWarn(reqId, 'yt:playlist:noContents');
+      if (contents) {
+        logInfo(reqId, 'yt:playlist:altStructure', 'continuation');
+      }
+    }
+
+    if (!contents || !Array.isArray(contents)) {
+      logWarn(reqId, 'yt:playlist:noContents', { hasData: !!data, hasContents: !!contents, isArray: Array.isArray(contents) });
       return { error: 'no_contents' };
     }
 
@@ -526,6 +538,11 @@ function extractTracksFromYTData(data, reqId) {
           url: `https://www.youtube.com/watch?v=${videoId}`
         });
       }
+    }
+
+    if (tracks.length === 0) {
+      logWarn(reqId, 'yt:playlist:noVideos', { contentsLength: contents.length });
+      return { error: 'no_videos' };
     }
 
     logInfo(reqId, 'yt:playlist:success', { count: tracks.length });
