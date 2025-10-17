@@ -472,6 +472,16 @@ async function extractYouTubePlaylistTracks(url, reqId) {
     }
 
     const data = JSON.parse(dataMatch[1]);
+    
+    // DEBUG : Afficher la structure pour comprendre le problème
+    logInfo(reqId, 'yt:playlist:dataKeys', { 
+      rootKeys: Object.keys(data).slice(0, 10),
+      hasContents: !!data?.contents,
+      hasSidebar: !!data?.sidebar,
+      hasContinuation: !!data?.continuationContents,
+      contentsKeys: data?.contents ? Object.keys(data.contents) : null
+    });
+    
     return extractTracksFromYTData(data, reqId);
     
   } catch (err) {
