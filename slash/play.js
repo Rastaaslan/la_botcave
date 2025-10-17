@@ -15,6 +15,8 @@ const PATTERNS = {
   SC_TRACK: /soundcloud\.com\/[^/]+\/[^/?]+/i,
   YT_PLAYLIST: /(?:youtube\.com\/(?:watch\?.*?list=|playlist\?list=)|youtu\.be\/.*?\?list=)([a-zA-Z0-9_-]+)/i,
   YT_VIDEO: /(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)/i,
+  YT_RADIO: /[?&]start_radio=1/i,
+  YT_MIX: /[?&]list=RD/i,
   SP_PLAYLIST: /open\.spotify\.com\/playlist\/([a-zA-Z0-9]+)/i,
   SP_ALBUM: /open\.spotify\.com\/album\/([a-zA-Z0-9]+)/i,
   SP_TRACK: /open\.spotify\.com\/track\/([a-zA-Z0-9]+)/i,
