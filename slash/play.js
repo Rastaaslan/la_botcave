@@ -16,7 +16,7 @@ const PATTERNS = {
   SP_PLAYLIST: /open\.spotify\.com\/(?:intl-[a-z]{2}\/)?playlist\/([a-zA-Z0-9]+)/i,
   SP_ALBUM: /open\.spotify\.com\/(?:intl-[a-z]{2}\/)?album\/([a-zA-Z0-9]+)/i,
   SP_TRACK: /open\.spotify\.com\/(?:intl-[a-z]{2}\/)?track\/([a-zA-Z0-9]+)/i,
-  AM_TRACK: /music\.apple\.com\/[a-z]{2}\/(?:album\/[^/]+\/\d+\?i=(\d+)|song\/[^/]+\/(\d+))/i
+  AM_TRACK: /music\.apple\.com\/[a-z]{2}\/album\/[^/]+\/\d+\?i=\d+/i
 };
 
 const SPOTIFY_CLIENT_ID = process.env.SPOTIFY_CLIENT_ID || '';
@@ -520,6 +520,48 @@ async function fetchSpotifyOG(url, reqId) {
   }
 }
 
+// Apple Music OG
+async function fetchAppleMusicOG(url, reqId) {
+  try {
+    logInfo(reqId, 'am:og:start', { url });
+    
+    const resp = await fetch(url, { 
+      headers: { 
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' 
+      },
+      redirect: 'follow',
+      timeout: 10000
+    });
+    
+    if (!resp.ok) {
+      logWarn(reqId, 'am:og:http', { status: resp.status });
+      return null;
+    }
+    
+    const html = await resp.text();
+    
+    const titleMatch = html.match(/"name":"([^"]+)"/);
+    const artistMatch = html.match(/"artist(?:Name)?":"([^"]+)"/);
+    
+    if (!titleMatch) {
+      logWarn(reqId, 'am:og:noTitle');
+      return null;
+    }
+    
+    const result = {
+      title: stripTitleNoise(titleMatch[1] || ''),
+      author: stripArtistNoise(artistMatch?.[1] || '')
+    };
+    
+    logInfo(reqId, 'am:og:success', result);
+    return result;
+    
+  } catch (err) {
+    logError(reqId, 'am:og:error', err.message);
+    return null;
+  }
+}
+
 // COMMANDE PRINCIPALE
 module.exports = {
   data: new SlashCommandBuilder()
@@ -852,6 +894,49 @@ module.exports = {
           embeds: [buildEmbed(gid, {
             type: 'error',
             title: '🔍 Spotify → SoundCloud',
+            description: `❌ Piste non trouvée sur SoundCloud:\n**${meta.title}**${meta.author ? `\npar ${meta.author}` : ''}`
+          })]
+        });
+      }
+
+      // ===== TRACK APPLE MUSIC =====
+      if (PATTERNS.AM_TRACK.test(query)) {
+        logInfo(reqId, 'type:amTrack');
+        
+        const meta = await fetchAppleMusicOG(query, reqId);
+        
+        if (!meta || !meta.title) {
+          return interaction.editReply({
+            embeds: [buildEmbed(gid, {
+              type: 'error',
+              title: '🔍 Apple Music → SoundCloud',
+              description: 'Impossible de récupérer les informations de la piste.'
+            })]
+          });
+        }
+        
+        const scTrack = await matchTrackOnSoundCloud(client, interaction.user, meta, reqId);
+        
+        if (scTrack) {
+          player.queue.add(scTrack);
+          
+          if (!player.playing && !player.paused) {
+            player.play();
+          }
+          
+          return interaction.editReply({
+            embeds: [buildEmbed(gid, {
+              type: 'success',
+              title: '✅ Apple Music → SoundCloud',
+              description: `**${scTrack.title}**\npar ${scTrack.author || 'Artiste inconnu'}\n\n🎵 Lecture depuis SoundCloud.`
+            })]
+          });
+        }
+        
+        return interaction.editReply({
+          embeds: [buildEmbed(gid, {
+            type: 'error',
+            title: '🔍 Apple Music → SoundCloud',
             description: `❌ Piste non trouvée sur SoundCloud:\n**${meta.title}**${meta.author ? `\npar ${meta.author}` : ''}`
           })]
         });
