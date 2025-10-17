@@ -13,9 +13,9 @@ const PATTERNS = {
   YT_VIDEO: /(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)/i,
   YT_RADIO: /[?&]start_radio=1/i,
   YT_MIX: /[?&]list=RD/i,
-  SP_PLAYLIST: /open\.spotify\.com\/playlist\/([a-zA-Z0-9]+)/i,
-  SP_ALBUM: /open\.spotify\.com\/album\/([a-zA-Z0-9]+)/i,
-  SP_TRACK: /open\.spotify\.com\/track\/([a-zA-Z0-9]+)/i,
+  SP_PLAYLIST: /open\.spotify\.com\/(?:intl-[a-z]{2}\/)?playlist\/([a-zA-Z0-9]+)/i,
+  SP_ALBUM: /open\.spotify\.com\/(?:intl-[a-z]{2}\/)?album\/([a-zA-Z0-9]+)/i,
+  SP_TRACK: /open\.spotify\.com\/(?:intl-[a-z]{2}\/)?track\/([a-zA-Z0-9]+)/i,
   AM_TRACK: /music\.apple\.com\/[a-z]{2}\/(?:album\/[^/]+\/\d+\?i=(\d+)|song\/[^/]+\/(\d+))/i
 };
 
