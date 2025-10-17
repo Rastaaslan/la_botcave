@@ -409,35 +409,104 @@ async function extractYouTubePlaylistTracks(url, reqId) {
       return [];
     }
 
-    const resp = await fetch(`https://www.youtube.com/playlist?list=${playlistId}`, {
+    const playlistUrl = `https://www.youtube.com/playlist?list=${playlistId}`;
+    logInfo(reqId, 'yt:playlist:fetching', { playlistId, url: playlistUrl });
+
+    const resp = await fetch(playlistUrl, {
       headers: { 
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept-Language': 'en-US,en;q=0.9'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
       },
       timeout: 15000
     });
     
     if (!resp.ok) {
-      logWarn(reqId, 'yt:playlist:http', { status: resp.status });
+      logWarn(reqId, 'yt:playlist:http', { status: resp.status, statusText: resp.statusText });
+      
+      // Détection d'erreurs spécifiques
+      if (resp.status === 404) {
+        logWarn(reqId, 'yt:playlist:notFound');
+        return { error: 'not_found' };
+      }
+      if (resp.status === 403) {
+        logWarn(reqId, 'yt:playlist:forbidden');
+        return { error: 'private' };
+      }
+      
       return [];
     }
 
     const html = await resp.text();
+    
+    // Vérifier si la playlist est vide ou privée
+    if (html.includes('This playlist is private') || html.includes('Cette playlist est privée')) {
+      logWarn(reqId, 'yt:playlist:private');
+      return { error: 'private' };
+    }
+    
+    if (html.includes('No videos') || html.includes('Aucune vidéo')) {
+      logWarn(reqId, 'yt:playlist:empty');
+      return { error: 'empty' };
+    }
+    
+    // Extraction des données
     const dataMatch = html.match(/var ytInitialData = ({.+?});/);
     
     if (!dataMatch) {
       logWarn(reqId, 'yt:playlist:noData');
-      return [];
+      
+      // Tentative alternative : chercher dans un autre format
+      const altMatch = html.match(/window\["ytInitialData"\]\s*=\s*({.+?});/);
+      if (!altMatch) {
+        logError(reqId, 'yt:playlist:parseError', 'No ytInitialData found');
+        return { error: 'parse_failed' };
+      }
+      
+      logInfo(reqId, 'yt:playlist:altFormat');
+      const data = JSON.parse(altMatch[1]);
+      return extractTracksFromYTData(data, reqId);
     }
 
     const data = JSON.parse(dataMatch[1]);
+    return extractTracksFromYTData(data, reqId);
+    
+  } catch (err) {
+    logError(reqId, 'yt:playlist:error', err.message);
+    
+    // Différencier les erreurs
+    if (err.name === 'AbortError' || err.code === 'ETIMEDOUT') {
+      return { error: 'timeout' };
+    }
+    if (err instanceof SyntaxError) {
+      return { error: 'parse_failed' };
+    }
+    
+    return [];
+  }
+}
+
+// Fonction helper pour extraire les tracks
+function extractTracksFromYTData(data, reqId) {
+  try {
     const contents = data?.contents?.twoColumnBrowseResultsRenderer?.tabs?.[0]
       ?.tabRenderer?.content?.sectionListRenderer?.contents?.[0]
       ?.itemSectionRenderer?.contents?.[0]?.playlistVideoListRenderer?.contents;
 
     if (!contents) {
+      // Tentative d'un autre chemin (structure peut varier)
+      const altContents = data?.sidebar?.playlistSidebarRenderer?.items?.[0]
+        ?.playlistSidebarPrimaryInfoRenderer?.stats;
+      
+      if (altContents) {
+        logWarn(reqId, 'yt:playlist:altStructure');
+      }
+      
       logWarn(reqId, 'yt:playlist:noContents');
-      return [];
+      return { error: 'no_contents' };
     }
 
     const tracks = [];
@@ -463,8 +532,8 @@ async function extractYouTubePlaylistTracks(url, reqId) {
     return tracks;
     
   } catch (err) {
-    logError(reqId, 'yt:playlist:error', err.message);
-    return [];
+    logError(reqId, 'yt:playlist:extractError', err.message);
+    return { error: 'extract_failed' };
   }
 }
 
