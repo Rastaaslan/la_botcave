@@ -453,7 +453,7 @@ module.exports = {
       });
 
       logInfo(reqId, 'player:status', { 
-        playerId: player.guildId, 
+        playerId: player.metadata?.playerId || player.guildId, 
         isNew, 
         voiceChannel: voiceChannel.name 
       });

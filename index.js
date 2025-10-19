@@ -55,9 +55,8 @@ client.manager = new Manager({
     },
   ],
   sendPayload: (guildId, payload) => {
-    // Extraire le vrai guildId depuis le playerId composite
-    const realGuildId = PlayerManager.extractGuildId(guildId) || guildId;
-    const guild = client.guilds.cache.get(realGuildId);
+    // Le guildId ici est déjà le vrai guildId Discord (pas le composite)
+    const guild = client.guilds.cache.get(guildId);
     if (!guild) return;
     try {
       const data = typeof payload === 'string' ? JSON.parse(payload) : payload;

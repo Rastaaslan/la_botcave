@@ -16,12 +16,12 @@ class PlayerManager {
     const playersMap = client.manager.players.cache || client.manager.players;
     const existingPlayer = Array.from(playersMap.values())
       .find(p => 
-        p.guildId.startsWith(`${guildId}-`) && 
+        p.guildId === guildId && 
         p.voiceChannelId === voiceChannelId
       );
     
     if (existingPlayer) {
-      console.log(`[PlayerManager] ♻️ Réutilisation player existant: ${existingPlayer.guildId}`);
+      console.log(`[PlayerManager] ♻️ Réutilisation player existant: ${existingPlayer.metadata?.playerId || existingPlayer.guildId}`);
       return { player: existingPlayer, isNew: false };
     }
     
@@ -31,20 +31,23 @@ class PlayerManager {
     
     console.log(`[PlayerManager] ✨ Création nouveau player: ${playerId}`);
     
+    // ⚠️ IMPORTANT: Moonlink.js doit recevoir le vrai guildId Discord
     const player = client.manager.players.create({
-      guildId: playerId,
+      guildId: guildId,  // ✅ Utiliser le vrai guildId Discord
       voiceChannelId: voiceChannelId,
       textChannelId: textChannelId,
       volume: 50
     });
     
-    // Métadonnées personnalisées
+    // Métadonnées personnalisées pour notre gestion multi-instance
     player.metadata = {
       createdBy: userId,
       createdAt: Date.now(),
       sessionId: uniqueId,
       sessionName: `Session-${uniqueId.substring(0, 4).toUpperCase()}`,
-      voiceChannelName: voiceChannelName || 'Salon inconnu'
+      voiceChannelName: voiceChannelName || 'Salon inconnu',
+      playerId: playerId,  // ✅ Notre ID composite stocké en métadonnée
+      realGuildId: guildId  // ✅ Sauvegarde du vrai guildId
     };
     
     return { player, isNew: true };
