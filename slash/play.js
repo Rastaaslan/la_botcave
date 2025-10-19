@@ -1,4 +1,4 @@
-// slash/play.js - VERSION PORU MULTI-INSTANCE COMPLÈTE
+// slash/play.js - VERSION PORU COMPLÈTE
 
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { buildEmbed } = require('../utils/embedHelper');
@@ -85,19 +85,25 @@ function isYouTubeUri(uri) {
   return typeof uri === 'string' && /youtu\.be|youtube\.com/i.test(uri);
 }
 
-// SoundCloud search avec Poru - 🔧 CORRECTION: Utiliser search() au lieu de resolve()
+// SoundCloud search avec Poru - ✅ MÉTHODE CORRECTE
 async function scSearch(client, requester, q, limit, reqId) {
   try {
     logInfo(reqId, 'scSearch', { query: q, limit });
+    
+    // Construction de la requête SoundCloud
     const searchQuery = q.startsWith('scsearch:') ? q : `scsearch:${q}`;
     
     if (DEBUG_PLAY) {
-      console.log('[DEBUG] Requête exacte vers Lavalink:', searchQuery);
+      console.log('[DEBUG] Requête Lavalink:', searchQuery);
       console.log('[DEBUG] Nodes disponibles:', client.poru.nodes.size);
     }
 
-    // ✅ CORRECTION: Utiliser search() avec les bons paramètres
-    const res = await client.poru.search(searchQuery, 'soundcloud', requester);
+    // ✅ PORU OFFICIEL: resolve({ query, source, requester })
+    const res = await client.poru.resolve({
+      query: searchQuery,
+      source: 'soundcloud',
+      requester: requester
+    });
     
     if (DEBUG_PLAY) {
       console.log('[DEBUG] Réponse complète:', JSON.stringify(res, null, 2));
@@ -193,7 +199,6 @@ async function extractYouTubePlaylistTracks(url, reqId) {
       return { error: 'private' };
     }
 
-    // Support pour plusieurs formats de données YouTube
     let dataMatch = html.match(/var ytInitialData = ({.+?});/);
     if (!dataMatch) {
       dataMatch = html.match(/ytInitialData"\s*:\s*({.+?})/);
@@ -295,7 +300,7 @@ async function extractSpotifyPlaylistTracks(url, reqId) {
         const retryAfter = parseInt(resp.headers.get('retry-after') || '1', 10);
         logWarn(reqId, 'sp:playlist:rateLimit', { retryAfter, page });
         await new Promise(resolve => setTimeout(resolve, (retryAfter + 1) * 1000));
-        continue; // Réessayer la même page
+        continue;
       }
 
       if (!resp.ok) {
@@ -378,7 +383,7 @@ async function matchTrackOnSoundCloud(client, requester, track, reqId) {
       if (uri && !seenUris.has(uri)) {
         seenUris.add(uri);
         uniqueResults.push(result);
-        if (uniqueResults.length >= 25) break; // Limiter à 25 candidats
+        if (uniqueResults.length >= 25) break;
       }
     }
 
@@ -594,7 +599,6 @@ module.exports = {
         logInfo(reqId, 'player:connect');
         try {
           player.connect();
-          // Attendre un peu que la connexion s'établisse
           await new Promise(resolve => setTimeout(resolve, 500));
           logInfo(reqId, 'player:connected');
         } catch (err) {
@@ -752,7 +756,11 @@ module.exports = {
       // ===== PLAYLIST SOUNDCLOUD =====
       if (PATTERNS.SC_PLAYLIST.test(query)) {
         logInfo(reqId, 'type:scPlaylist');
-        const res = await client.poru.search(query, 'soundcloud', interaction.user);
+        const res = await client.poru.resolve({
+          query: query,
+          source: 'soundcloud',
+          requester: interaction.user
+        });
 
         if (!res?.tracks || res.tracks.length === 0) {
           return interaction.editReply({
@@ -913,8 +921,11 @@ module.exports = {
 
       // ===== TRACK SOUNDCLOUD OU RECHERCHE =====
       logInfo(reqId, 'type:scDirectSearch');
-      // ✅ Utiliser search() au lieu de resolve()
-      const res = await client.poru.search(query, 'soundcloud', interaction.user);
+      const res = await client.poru.resolve({
+        query: query,
+        source: 'scsearch',
+        requester: interaction.user
+      });
 
       if (!res?.tracks || res.tracks.length === 0) {
         return interaction.editReply({
