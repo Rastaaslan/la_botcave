@@ -1,4 +1,4 @@
-// slash/play.js - VERSION PORU COMPLÈTE (SYNTAXE CORRIGÉE)
+// slash/play.js - VERSION PORU COMPLÈTE AVEC PROTECTION PLAYER
 
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { buildEmbed } = require('../utils/embedHelper');
@@ -85,7 +85,7 @@ function isYouTubeUri(uri) {
   return typeof uri === 'string' && /youtu\.be|youtube\.com/i.test(uri);
 }
 
-// SoundCloud search avec Poru - ✅ SYNTAXE CORRIGÉE
+// SoundCloud search avec Poru - MULTI-FALLBACK
 async function scSearch(client, requester, q, limit, reqId) {
   try {
     logInfo(reqId, 'scSearch', { query: q, limit });
@@ -95,19 +95,54 @@ async function scSearch(client, requester, q, limit, reqId) {
       console.log('[DEBUG] Nodes disponibles:', client.poru.nodes.size);
     }
 
-    // ✅ PORU: NE PAS ajouter scsearch: dans la query, utiliser source directement
-    const res = await client.poru.resolve({
-      query: q, // Query sans préfixe
-      source: 'scsearch', // Source = scsearch pour recherche SoundCloud
+    // ESSAI 1: source = scsearch (recommandé Poru)
+    let res = await client.poru.resolve({
+      query: q,
+      source: 'scsearch',
       requester: requester
     });
     
     if (DEBUG_PLAY) {
-      console.log('[DEBUG] Réponse Poru:', JSON.stringify({
+      console.log('[DEBUG] Tentative 1 (scsearch):', {
         loadType: res?.loadType,
-        tracksCount: res?.tracks?.length,
-        firstTrack: res?.tracks?.[0]?.info?.title
-      }, null, 2));
+        tracksCount: res?.tracks?.length
+      });
+    }
+
+    // ESSAI 2: Si échec, essayer avec soundcloud + préfixe
+    if (!res || !res.tracks || res.tracks.length === 0) {
+      logWarn(reqId, 'scSearch:trying-soundcloud', { loadType: res?.loadType });
+      
+      res = await client.poru.resolve({
+        query: `scsearch:${q}`,
+        source: 'soundcloud',
+        requester: requester
+      });
+      
+      if (DEBUG_PLAY) {
+        console.log('[DEBUG] Tentative 2 (soundcloud avec préfixe):', {
+          loadType: res?.loadType,
+          tracksCount: res?.tracks?.length
+        });
+      }
+    }
+
+    // ESSAI 3: Dernier recours - YouTube
+    if (!res || !res.tracks || res.tracks.length === 0) {
+      logWarn(reqId, 'scSearch:trying-youtube-fallback', { query: q });
+      
+      res = await client.poru.resolve({
+        query: q,
+        source: 'ytsearch',
+        requester: requester
+      });
+      
+      if (DEBUG_PLAY) {
+        console.log('[DEBUG] Tentative 3 (YouTube fallback):', {
+          loadType: res?.loadType,
+          tracksCount: res?.tracks?.length
+        });
+      }
     }
 
     logInfo(reqId, 'scSearch:raw', {
@@ -122,9 +157,8 @@ async function scSearch(client, requester, q, limit, reqId) {
       return [];
     }
 
-    // Filtrer les résultats YouTube et limiter
     const tracks = res.tracks
-      .filter(t => t && t.info && !isYouTubeUri(t.info.uri))
+      .filter(t => t && t.info)
       .slice(0, limit);
 
     logInfo(reqId, 'scSearch:results', { count: tracks.length, rawCount: res.tracks.length });
@@ -347,7 +381,7 @@ async function extractSpotifyPlaylistTracks(url, reqId) {
 // Matching sur SoundCloud
 async function matchTrackOnSoundCloud(client, requester, track, reqId) {
   try {
-    const query = track.query || `${track.author} ${title}`.trim();
+    const query = track.query || `${track.author} ${track.title}`.trim();
     logInfo(reqId, 'sc:match:start', { query });
 
     const strategies = [
@@ -369,7 +403,7 @@ async function matchTrackOnSoundCloud(client, requester, track, reqId) {
     }
 
     if (allResults.length === 0) {
-      logWarn(reqId, 'sc:match:noResults');
+      logWarn(reqId, 'sc:match:noResults', { track: `${track.author} - ${track.title}` });
       return null;
     }
 
@@ -669,18 +703,48 @@ module.exports = {
         let failed = 0;
 
         for (const track of result) {
+          // Vérifier que le player existe toujours
+          const currentPlayer = client.poru.players.get(gid);
+          if (!currentPlayer) {
+            logError(reqId, 'yt:playlist:playerGone', { at: added, total: result.length });
+            return interaction.editReply({
+              embeds: [buildEmbed(gid, {
+                type: 'error',
+                title: '❌ Session perdue',
+                description: `Le bot a été déconnecté pendant la recherche.\n\n**${added}** piste(s) ajoutée(s) avant la déconnexion.`
+              })]
+            });
+          }
+
           const scTrack = await matchTrackOnSoundCloud(client, interaction.user, track, reqId);
           if (scTrack) {
-            player.queue.add(scTrack);
+            currentPlayer.queue.add(scTrack);
             added++;
+            
+            if (added % 5 === 0) {
+              PlayerManager.updateActivity(currentPlayer);
+              logInfo(reqId, 'yt:playlist:progress', { added, failed, total: result.length });
+            }
           } else {
             failed++;
           }
         }
 
-        PlayerManager.updateActivity(player);
-        if (!player.isPlaying && !player.isPaused && added > 0) {
-          await player.play();
+        const finalPlayer = client.poru.players.get(gid);
+        if (!finalPlayer) {
+          logError(reqId, 'yt:playlist:playerGoneEnd');
+          return interaction.editReply({
+            embeds: [buildEmbed(gid, {
+              type: 'warning',
+              title: '⚠️ Session perdue',
+              description: `**${added}** piste(s) ajoutée(s) mais le bot a été déconnecté.`
+            })]
+          });
+        }
+
+        PlayerManager.updateActivity(finalPlayer);
+        if (!finalPlayer.isPlaying && !finalPlayer.isPaused && added > 0) {
+          await finalPlayer.play();
         }
 
         return interaction.editReply({
@@ -689,7 +753,7 @@ module.exports = {
             title: '✅ Playlist YouTube → SoundCloud',
             description: `**${added}** piste(s) trouvée(s)` +
               (failed > 0 ? `\n⚠️ **${failed}** piste(s) non trouvée(s)` : '') +
-              `\n\n💿 Instance: **${player.metadata?.sessionName}** dans **${voiceChannel.name}**`
+              `\n\n💿 Instance: **${finalPlayer.metadata?.sessionName}** dans **${voiceChannel.name}**`
           })]
         });
       }
@@ -722,18 +786,50 @@ module.exports = {
         let failed = 0;
 
         for (const track of tracks) {
+          // ✅ PROTECTION: Vérifier que le player existe toujours
+          const currentPlayer = client.poru.players.get(gid);
+          if (!currentPlayer) {
+            logError(reqId, 'sp:playlist:playerGone', { at: added, total: tracks.length });
+            return interaction.editReply({
+              embeds: [buildEmbed(gid, {
+                type: 'error',
+                title: '❌ Session perdue',
+                description: `Le bot a été déconnecté pendant la recherche.\n\n**${added}** piste(s) ajoutée(s) avant la déconnexion.\n\n💡 Réessaye avec une playlist plus courte.`
+              })]
+            });
+          }
+
           const scTrack = await matchTrackOnSoundCloud(client, interaction.user, track, reqId);
           if (scTrack) {
-            player.queue.add(scTrack);
+            currentPlayer.queue.add(scTrack);
             added++;
+            
+            // Mettre à jour l'activité tous les 5 ajouts
+            if (added % 5 === 0) {
+              PlayerManager.updateActivity(currentPlayer);
+              logInfo(reqId, 'sp:playlist:progress', { added, failed, total: tracks.length });
+            }
           } else {
             failed++;
           }
         }
 
-        PlayerManager.updateActivity(player);
-        if (!player.isPlaying && !player.isPaused && added > 0) {
-          await player.play();
+        // ✅ Vérification finale
+        const finalPlayer = client.poru.players.get(gid);
+        if (!finalPlayer) {
+          logError(reqId, 'sp:playlist:playerGoneEnd');
+          return interaction.editReply({
+            embeds: [buildEmbed(gid, {
+              type: 'warning',
+              title: '⚠️ Session perdue',
+              description: `**${added}** piste(s) ajoutée(s) mais le bot a été déconnecté.\n\nRelance la lecture avec \`/play\`.`
+            })]
+          });
+        }
+
+        PlayerManager.updateActivity(finalPlayer);
+        if (!finalPlayer.isPlaying && !finalPlayer.isPaused && added > 0) {
+          await finalPlayer.play();
         }
 
         return interaction.editReply({
@@ -742,7 +838,7 @@ module.exports = {
             title: `✅ ${isAlbum ? 'Album' : 'Playlist'} Spotify → SoundCloud`,
             description: `**${added}** piste(s) trouvée(s)` +
               (failed > 0 ? `\n⚠️ **${failed}** piste(s) non trouvée(s)` : '') +
-              `\n\n💿 Instance: **${player.metadata?.sessionName}** dans **${voiceChannel.name}**`
+              `\n\n💿 Instance: **${finalPlayer.metadata?.sessionName}** dans **${voiceChannel.name}**`
           })]
         });
       }
