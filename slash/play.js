@@ -87,16 +87,34 @@ function isYouTubeUri(uri) {
 async function scSearch(client, requester, q, limit, reqId) {
   try {
     logInfo(reqId, 'scSearch', { query: q, limit });
-    const res = await client.poru.resolve({ 
-      query: `scsearch:${q}`, 
+    
+    // Méthode alternative : utiliser resolve au lieu de search
+    const res = await client.poru.resolve({
+      query: `scsearch:${q}`,
       source: 'soundcloud',
-      requester 
+      requester
     });
-    const tracks = (res?.tracks || []).slice(0, limit).filter(t => t && !isYouTubeUri(t.info.uri));
+    
+    logInfo(reqId, 'scSearch:raw', { 
+      hasResult: !!res, 
+      loadType: res?.loadType,
+      tracksCount: res?.tracks?.length 
+    });
+    
+    if (!res || !res.tracks || res.tracks.length === 0) {
+      logWarn(reqId, 'scSearch:emptyResult');
+      return [];
+    }
+    
+    const tracks = res.tracks
+      .slice(0, limit)
+      .filter(t => t && t.info && !isYouTubeUri(t.info.uri));
+    
     logInfo(reqId, 'scSearch:results', { count: tracks.length });
     return tracks;
   } catch (err) {
     logError(reqId, 'scSearch:error', err.message);
+    logError(reqId, 'scSearch:stack', err.stack);
     return [];
   }
 }
@@ -471,7 +489,14 @@ module.exports = {
       // Connexion si besoin
       if (!player.isConnected) {
         logInfo(reqId, 'player:connect');
-        await player.connect();
+        try {
+          player.connect();
+          // Attendre un peu que la connexion s'établisse
+          await new Promise(resolve => setTimeout(resolve, 500));
+          logInfo(reqId, 'player:connected');
+        } catch (err) {
+          logError(reqId, 'player:connect:error', err.message);
+        }
       }
 
       PlayerManager.updateActivity(player);
@@ -626,11 +651,7 @@ module.exports = {
       if (PATTERNS.SC_PLAYLIST.test(query)) {
         logInfo(reqId, 'type:scPlaylist');
         
-        const res = await client.poru.resolve({
-          query,
-          source: 'soundcloud',
-          requester: interaction.user
-        });
+        const res = await client.poru.search(query, 'soundcloud', interaction.user);
 
         if (!res?.tracks || res.tracks.length === 0) {
           return interaction.editReply({
@@ -802,12 +823,19 @@ module.exports = {
 
       // ===== TRACK SOUNDCLOUD OU RECHERCHE =====
       logInfo(reqId, 'type:scDirectSearch');
-      
-      const res = await client.poru.resolve({
-        query: `scsearch:${query}`,
-        source: 'soundcloud',
-        requester: interaction.user
-      });
+
+      // ✅ Utiliser search() au lieu de resolve()
+      const res = await client.poru.search(query, 'soundcloud', interaction.user);
+
+      if (!res?.tracks || res.tracks.length === 0) {
+        return interaction.editReply({
+          embeds: [buildEmbed(gid, {
+            type: 'error',
+            title: '🔊 Recherche SoundCloud',
+            description: `Aucune piste trouvée pour: **${query}**\n\n💿 Instance: **${player.metadata?.sessionName}** dans **${voiceChannel.name}**`
+          })]
+        });
+      }
 
       if (!res?.tracks || res.tracks.length === 0) {
         return interaction.editReply({
