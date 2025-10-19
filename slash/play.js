@@ -88,12 +88,20 @@ async function scSearch(client, requester, q, limit, reqId) {
   try {
     logInfo(reqId, 'scSearch', { query: q, limit });
     
-    // Méthode alternative : utiliser resolve au lieu de search
+    const searchQuery = q.startsWith('scsearch:') ? q : `scsearch:${q}`;
+    
+    // 🔍 LOG DE DEBUG
+    console.log('[DEBUG] Requête exacte vers Lavalink:', searchQuery);
+    console.log('[DEBUG] Node Poru:', client.poru.nodes);
+    
     const res = await client.poru.resolve({
-      query: `scsearch:${q}`,
+      query: searchQuery,
       source: 'soundcloud',
       requester
     });
+    
+    // 🔍 LOG COMPLET DE LA RÉPONSE
+    console.log('[DEBUG] Réponse complète:', JSON.stringify(res, null, 2));
     
     logInfo(reqId, 'scSearch:raw', { 
       hasResult: !!res, 
