@@ -1,7 +1,7 @@
 {
   "name": "music-bot",
-  "version": "1.0.0",
-  "description": "Bot Discord musique avec Moonlink.js",
+  "version": "2.0.0",
+  "description": "Bot Discord musique avec Poru (multi-instance)",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -12,13 +12,15 @@
     "discord.js": "^14.14.1",
     "dotenv": "^17.2.3",
     "libsodium-wrappers": "^0.7.11",
-    "moonlink.js": "^4.60.18",
+    "poru": "^8.8.0",
     "node-fetch": "^2.7.0"
   },
   "keywords": [
     "discord",
     "bot",
-    "music"
+    "music",
+    "poru",
+    "multi-instance"
   ],
   "author": "",
   "license": "ISC"

@@ -1,9 +1,9 @@
-// utils/playerManager.js
+// utils/playerManager.js - VERSION PORU
 const crypto = require('crypto');
 
 class PlayerManager {
   /**
-   * Récupère ou crée intelligemment un player basé sur le salon vocal de l'utilisateur
+   * Récupère ou crée intelligemment un player basé sur le salon vocal
    * @param {Client} client - Client Discord.js
    * @param {Object} options - { guildId, voiceChannelId, textChannelId, userId, voiceChannelName }
    * @returns {Object} { player, isNew }
@@ -11,50 +11,47 @@ class PlayerManager {
   static getOrCreatePlayer(client, options) {
     const { guildId, voiceChannelId, textChannelId, userId, voiceChannelName } = options;
     
-    // 1️⃣ Chercher un player existant dans ce salon vocal
-    // Moonlink.js utilise .cache au lieu de .values()
-    const playersMap = client.manager.players.cache || client.manager.players;
-    const existingPlayer = Array.from(playersMap.values())
-      .find(p => 
-        p.guildId === guildId && 
-        p.voiceChannelId === voiceChannelId
-      );
+    // 1️⃣ Créer un playerId unique pour ce salon vocal
+    const playerId = `${guildId}-${voiceChannelId}`;
     
-    if (existingPlayer) {
-      console.log(`[PlayerManager] ♻️ Réutilisation player existant: ${existingPlayer.metadata?.playerId || existingPlayer.guildId}`);
-      return { player: existingPlayer, isNew: false };
+    // 2️⃣ Chercher un player existant avec ce playerId
+    let player = client.poru.players.get(playerId);
+    
+    if (player) {
+      console.log(`[PlayerManager] ♻️ Réutilisation player: ${playerId}`);
+      return { player, isNew: false };
     }
     
-    // 2️⃣ Pas de player existant → Créer un nouveau avec ID unique
+    // 3️⃣ Créer un nouveau player
     const uniqueId = crypto.randomBytes(4).toString('hex');
-    const playerId = `${guildId}-${voiceChannelId}-${uniqueId}`;
     
-    console.log(`[PlayerManager] ✨ Création nouveau player: ${playerId}`);
+    console.log(`[PlayerManager] ✨ Création player: ${playerId}`);
     
-    // ⚠️ IMPORTANT: Moonlink.js doit recevoir le vrai guildId Discord
-    const player = client.manager.players.create({
-      guildId: guildId,  // ✅ Utiliser le vrai guildId Discord
-      voiceChannelId: voiceChannelId,
-      textChannelId: textChannelId,
-      volume: 50
+    player = client.poru.createConnection({
+      guildId: playerId,  // ✅ Poru accepte un ID custom
+      voiceChannel: voiceChannelId,
+      textChannel: textChannelId,
+      deaf: true,
+      mute: false
     });
     
-    // Métadonnées personnalisées pour notre gestion multi-instance
+    // Métadonnées personnalisées
     player.metadata = {
       createdBy: userId,
       createdAt: Date.now(),
       sessionId: uniqueId,
       sessionName: `Session-${uniqueId.substring(0, 4).toUpperCase()}`,
       voiceChannelName: voiceChannelName || 'Salon inconnu',
-      playerId: playerId,  // ✅ Notre ID composite stocké en métadonnée
-      realGuildId: guildId  // ✅ Sauvegarde du vrai guildId
+      voiceChannelId: voiceChannelId,
+      realGuildId: guildId,
+      playerId: playerId
     };
     
     return { player, isNew: true };
   }
   
   /**
-   * Récupère le player actif pour un utilisateur dans son salon vocal
+   * Récupère le player pour un utilisateur dans son salon vocal
    * @param {Client} client
    * @param {string} guildId
    * @param {string} voiceChannelId
@@ -63,54 +60,56 @@ class PlayerManager {
   static getPlayerForUser(client, guildId, voiceChannelId) {
     if (!voiceChannelId) return null;
     
-    const playersMap = client.manager.players.cache || client.manager.players;
-    return Array.from(playersMap.values())
-      .find(p => 
-        p.guildId.startsWith(`${guildId}-`) && 
-        p.voiceChannelId === voiceChannelId
-      );
+    const playerId = `${guildId}-${voiceChannelId}`;
+    return client.poru.players.get(playerId) || null;
   }
   
   /**
-   * Liste tous les players actifs d'un serveur
+   * Liste tous les players d'un serveur
    * @param {Client} client
    * @param {string} guildId
    * @returns {Array<Player>}
    */
   static listGuildPlayers(client, guildId) {
-    const playersMap = client.manager.players.cache || client.manager.players;
-    return Array.from(playersMap.values())
-      .filter(p => p.guildId.startsWith(`${guildId}-`))
+    return Array.from(client.poru.players.values())
+      .filter(p => p.guildId && p.guildId.startsWith(`${guildId}-`))
       .sort((a, b) => (a.metadata?.createdAt || 0) - (b.metadata?.createdAt || 0));
   }
   
   /**
-   * Extrait le vrai guildId depuis un playerId composite
-   * @param {string} playerId - Format: "guildId-voiceChannelId-uniqueId"
+   * Extrait le vrai guildId depuis un playerId ou player
+   * @param {string|Player} playerIdOrPlayer
    * @returns {string}
    */
-  static extractGuildId(playerId) {
-    if (!playerId || typeof playerId !== 'string') return null;
-    return playerId.split('-')[0];
+  static extractGuildId(playerIdOrPlayer) {
+    if (typeof playerIdOrPlayer === 'object' && playerIdOrPlayer?.metadata?.realGuildId) {
+      return playerIdOrPlayer.metadata.realGuildId;
+    }
+    if (typeof playerIdOrPlayer === 'object' && playerIdOrPlayer?.guildId) {
+      return playerIdOrPlayer.guildId.split('-')[0];
+    }
+    if (typeof playerIdOrPlayer === 'string') {
+      return playerIdOrPlayer.split('-')[0];
+    }
+    return null;
   }
   
   /**
-   * Nettoie les players inactifs (appelé périodiquement)
+   * Nettoie les players inactifs
    * @param {Client} client
-   * @param {number} inactiveThresholdMs - Temps d'inactivité avant nettoyage (défaut: 5min)
-   * @returns {number} Nombre de players nettoyés
+   * @param {number} inactiveThresholdMs
+   * @returns {number}
    */
   static cleanupInactivePlayers(client, inactiveThresholdMs = 5 * 60 * 1000) {
     let cleaned = 0;
     const now = Date.now();
     
-    const playersMap = client.manager.players.cache || client.manager.players;
-    for (const [id, player] of playersMap) {
+    for (const [id, player] of client.poru.players) {
       const lastActivity = player.metadata?.lastActivity || player.metadata?.createdAt || 0;
       const inactive = now - lastActivity > inactiveThresholdMs;
       
-      if (!player.connected && !player.playing && inactive) {
-        console.log(`[PlayerManager] 🧹 Nettoyage player inactif: ${id}`);
+      if (!player.isConnected && !player.isPlaying && inactive) {
+        console.log(`[PlayerManager] 🧹 Nettoyage player: ${id}`);
         player.destroy();
         cleaned++;
       }

@@ -1,4 +1,3 @@
-// slash/queue.js - SMART MODE
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const { getTheme } = require('../utils/themeStore');
 const { PlayerManager } = require('../utils/playerManager');
@@ -36,14 +35,14 @@ module.exports = {
         text: `Instance: ${player.metadata?.sessionName || 'Session'} • Salon: ${voiceChannel.name}` 
       });
     
-    if (player.current) {
-      embed.setDescription(`**🎶 En lecture :**\n${player.current.title}`);
+    if (player.currentTrack) {
+      embed.setDescription(`**🎶 En lecture :**\n${player.currentTrack.info.title}`);
     }
     
     if (player.queue.size > 0) {
-      const tracks = player.queue.tracks
+      const tracks = player.queue
         .slice(0, 10)
-        .map((t, i) => `${i + 1}. ${t.title}`)
+        .map((t, i) => `${i + 1}. ${t.info.title}`)
         .join('\n');
       
       embed.addFields({ 

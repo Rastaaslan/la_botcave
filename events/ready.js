@@ -3,7 +3,7 @@ module.exports = {
   once: true,
   execute(client) {
     console.log(`Connecté en tant que ${client.user.tag}`);
-    client.manager.init(client.user.id);
-    console.log('Moonlink Manager initialisé');
+    // Poru s'initialise déjà dans index.js
+    console.log('Poru Manager prêt');
   },
 };
