@@ -1,4 +1,4 @@
-// index.js
+// index.js - VERSION SMART MODE
 require('dotenv').config();
 
 const { Client, GatewayIntentBits, Collection } = require('discord.js');
@@ -6,6 +6,7 @@ const { Manager } = require('moonlink.js');
 const fs = require('fs');
 const path = require('path');
 const { buildEmbed } = require('./utils/embedHelper');
+const { PlayerManager } = require('./utils/playerManager');
 
 const client = new Client({
   intents: [
@@ -54,7 +55,9 @@ client.manager = new Manager({
     },
   ],
   sendPayload: (guildId, payload) => {
-    const guild = client.guilds.cache.get(guildId);
+    // Extraire le vrai guildId depuis le playerId composite
+    const realGuildId = PlayerManager.extractGuildId(guildId) || guildId;
+    const guild = client.guilds.cache.get(realGuildId);
     if (!guild) return;
     try {
       const data = typeof payload === 'string' ? JSON.parse(payload) : payload;
@@ -70,57 +73,86 @@ client.manager = new Manager({
 client.manager.on('nodeConnect', (node) => {
   console.log(`✅ Node ${node.host} connecté`);
 });
+
 client.manager.on('nodeError', (node, error) => {
   console.error(`❌ Erreur sur le node ${node.host}:`, error);
 });
 
-// Événements musique → embeds
+// Événements musique → embeds avec support multi-instance
 client.manager.on('trackStart', (player, track) => {
   const ch = client.channels.cache.get(player.textChannelId);
   if (!ch) return;
+  
+  // Extraire le vrai guildId
+  const realGuildId = PlayerManager.extractGuildId(player.guildId);
+  if (!realGuildId) return;
+  
   ch.send({
     embeds: [
-      buildEmbed(player.guildId, {
+      buildEmbed(realGuildId, {
         title: 'Lecture',
-        description: `🎵 ${track.title}`,
+        description: `🎵 ${track.title}\n\n🎵 Instance: **${player.metadata?.sessionName || 'Session'}**`,
         url: track.uri || null,
         thumbnail: track.artworkUrl || null,
       }),
     ],
   });
+  
+  // Mettre à jour l'activité
+  PlayerManager.updateActivity(player);
 });
 
 client.manager.on('trackError', (player, track) => {
   const ch = client.channels.cache.get(player.textChannelId);
-  if (ch) {
+  const realGuildId = PlayerManager.extractGuildId(player.guildId);
+  
+  if (ch && realGuildId) {
     ch.send({
       embeds: [
-        buildEmbed(player.guildId, {
+        buildEmbed(realGuildId, {
           type: 'error',
           title: 'Erreur de lecture',
-          description: `Impossible de lire ${track?.title || 'la piste'}.`,
+          description: `Impossible de lire ${track?.title || 'la piste'}.\n\n🎵 Instance: **${player.metadata?.sessionName || 'Session'}**`,
         }),
       ],
     });
   }
+  
   if (player.queue.size > 0) player.play();
 });
 
 client.manager.on('queueEnd', (player) => {
   const ch = client.channels.cache.get(player.textChannelId);
   if (!ch) return;
+  
+  const realGuildId = PlayerManager.extractGuildId(player.guildId);
+  if (!realGuildId) return;
+  
   ch.send({
     embeds: [
-      buildEmbed(player.guildId, {
+      buildEmbed(realGuildId, {
         title: 'File terminée',
-        description: 'Plus de pistes dans la file.',
+        description: `Plus de pistes dans la file.\n\n🎵 Instance: **${player.metadata?.sessionName || 'Session'}**`,
       }),
     ],
   });
 });
 
+// Événement de déconnexion du player
+client.manager.on('playerDisconnect', (player) => {
+  console.log(`🔌 Player ${player.guildId} déconnecté`);
+});
+
 // Pont voix Discord → Moonlink
 client.on('raw', (data) => client.manager?.packetUpdate(data));
+
+// Nettoyage périodique des players inactifs
+setInterval(() => {
+  const cleaned = PlayerManager.cleanupInactivePlayers(client, 5 * 60 * 1000); // 5 minutes d'inactivité
+  if (cleaned > 0) {
+    console.log(`🧹 Nettoyage: ${cleaned} player(s) inactif(s) supprimé(s)`);
+  }
+}, 60000); // Vérification toutes les minutes
 
 // Connexion
 client.login(process.env.DISCORD_TOKEN);
