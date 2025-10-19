@@ -1,4 +1,4 @@
-// slash/play.js - VERSION PORU COMPLÈTE
+// slash/play.js - VERSION PORU COMPLÈTE (SYNTAXE CORRIGÉE)
 
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { buildEmbed } = require('../utils/embedHelper');
@@ -85,28 +85,29 @@ function isYouTubeUri(uri) {
   return typeof uri === 'string' && /youtu\.be|youtube\.com/i.test(uri);
 }
 
-// SoundCloud search avec Poru - ✅ MÉTHODE CORRECTE
+// SoundCloud search avec Poru - ✅ SYNTAXE CORRIGÉE
 async function scSearch(client, requester, q, limit, reqId) {
   try {
     logInfo(reqId, 'scSearch', { query: q, limit });
     
-    // Construction de la requête SoundCloud
-    const searchQuery = q.startsWith('scsearch:') ? q : `scsearch:${q}`;
-    
     if (DEBUG_PLAY) {
-      console.log('[DEBUG] Requête Lavalink:', searchQuery);
+      console.log('[DEBUG] Query brute:', q);
       console.log('[DEBUG] Nodes disponibles:', client.poru.nodes.size);
     }
 
-    // ✅ PORU OFFICIEL: resolve({ query, source, requester })
+    // ✅ PORU: NE PAS ajouter scsearch: dans la query, utiliser source directement
     const res = await client.poru.resolve({
-      query: searchQuery,
-      source: 'soundcloud',
+      query: q, // Query sans préfixe
+      source: 'scsearch', // Source = scsearch pour recherche SoundCloud
       requester: requester
     });
     
     if (DEBUG_PLAY) {
-      console.log('[DEBUG] Réponse complète:', JSON.stringify(res, null, 2));
+      console.log('[DEBUG] Réponse Poru:', JSON.stringify({
+        loadType: res?.loadType,
+        tracksCount: res?.tracks?.length,
+        firstTrack: res?.tracks?.[0]?.info?.title
+      }, null, 2));
     }
 
     logInfo(reqId, 'scSearch:raw', {
@@ -117,7 +118,7 @@ async function scSearch(client, requester, q, limit, reqId) {
     });
 
     if (!res || !res.tracks || res.tracks.length === 0) {
-      logWarn(reqId, 'scSearch:emptyResult', { loadType: res?.loadType });
+      logWarn(reqId, 'scSearch:emptyResult', { loadType: res?.loadType, query: q });
       return [];
     }
 
@@ -253,7 +254,7 @@ async function extractYouTubePlaylistTracks(url, reqId) {
   }
 }
 
-// Spotify playlist extraction - 🔧 AMÉLIORATIONS: Pagination, rate limits, filtrage
+// Spotify playlist extraction
 async function extractSpotifyPlaylistTracks(url, reqId) {
   try {
     logInfo(reqId, 'sp:playlist:start', { url });
@@ -295,7 +296,6 @@ async function extractSpotifyPlaylistTracks(url, reqId) {
         timeout: 10000
       });
 
-      // 🔧 CORRECTION: Gestion du rate limiting 429
       if (resp.status === 429) {
         const retryAfter = parseInt(resp.headers.get('retry-after') || '1', 10);
         logWarn(reqId, 'sp:playlist:rateLimit', { retryAfter, page });
@@ -312,7 +312,6 @@ async function extractSpotifyPlaylistTracks(url, reqId) {
       for (const item of data.items || []) {
         const track = item.track || item;
         
-        // 🔧 CORRECTION: Filtrer les pistes locales et non-track
         if (!track || !track.name || track.is_local === true || track.type !== 'track') {
           if (DEBUG_PLAY && track) {
             console.log('[DEBUG] Piste ignorée:', { name: track.name, is_local: track.is_local, type: track.type });
@@ -324,7 +323,6 @@ async function extractSpotifyPlaylistTracks(url, reqId) {
         const artists = track.artists?.map(a => a.name).filter(Boolean) || [];
         const firstArtist = stripArtistNoise(artists[0] || '');
         
-        // 🔧 AMÉLIORATION: Utiliser le premier artiste pour réduire le bruit
         const query = firstArtist && title ? `${firstArtist} ${title}`.trim() : title;
 
         tracks.push({
@@ -346,10 +344,10 @@ async function extractSpotifyPlaylistTracks(url, reqId) {
   }
 }
 
-// Matching sur SoundCloud - 🔧 AMÉLIORATIONS: Déduplication, scoring, logs
+// Matching sur SoundCloud
 async function matchTrackOnSoundCloud(client, requester, track, reqId) {
   try {
-    const query = track.query || `${track.author} ${track.title}`.trim();
+    const query = track.query || `${track.author} ${title}`.trim();
     logInfo(reqId, 'sc:match:start', { query });
 
     const strategies = [
@@ -361,7 +359,7 @@ async function matchTrackOnSoundCloud(client, requester, track, reqId) {
     let allResults = [];
     for (const strategy of strategies) {
       if (!strategy.query.trim()) continue;
-      logInfo(reqId, 'sc:match:strategy', { name: strategy.name });
+      logInfo(reqId, 'sc:match:strategy', { name: strategy.name, query: strategy.query });
       
       const results = await scSearch(client, requester, strategy.query, strategy.limit, reqId);
       if (results && results.length > 0) {
@@ -375,7 +373,6 @@ async function matchTrackOnSoundCloud(client, requester, track, reqId) {
       return null;
     }
 
-    // 🔧 AMÉLIORATION: Déduplication et limitation avant scoring
     const uniqueResults = [];
     const seenUris = new Set();
     for (const result of allResults) {
@@ -418,7 +415,6 @@ async function matchTrackOnSoundCloud(client, requester, track, reqId) {
       }
     }
 
-    // 🔧 AMÉLIORATION: Seuil configurable via env
     if (bestMatch && bestScore >= SC_MATCH_THRESHOLD) {
       logInfo(reqId, 'sc:match:found', { 
         score: bestScore.toFixed(2), 
@@ -579,7 +575,6 @@ module.exports = {
     try {
       const client = interaction.client;
 
-      // ✨ SMART MODE: Récupération ou création automatique multi-instance
       const { player, isNew } = PlayerManager.getOrCreatePlayer(client, {
         guildId: gid,
         voiceChannelId: voiceChannel.id,
@@ -594,7 +589,6 @@ module.exports = {
         voiceChannel: voiceChannel.name
       });
 
-      // Connexion si besoin
       if (!player.isConnected) {
         logInfo(reqId, 'player:connect');
         try {
