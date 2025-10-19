@@ -12,7 +12,9 @@ class PlayerManager {
     const { guildId, voiceChannelId, textChannelId, userId, voiceChannelName } = options;
     
     // 1️⃣ Chercher un player existant dans ce salon vocal
-    const existingPlayer = Array.from(client.manager.players.values())
+    // Moonlink.js utilise .cache au lieu de .values()
+    const playersMap = client.manager.players.cache || client.manager.players;
+    const existingPlayer = Array.from(playersMap.values())
       .find(p => 
         p.guildId.startsWith(`${guildId}-`) && 
         p.voiceChannelId === voiceChannelId
@@ -58,7 +60,8 @@ class PlayerManager {
   static getPlayerForUser(client, guildId, voiceChannelId) {
     if (!voiceChannelId) return null;
     
-    return Array.from(client.manager.players.values())
+    const playersMap = client.manager.players.cache || client.manager.players;
+    return Array.from(playersMap.values())
       .find(p => 
         p.guildId.startsWith(`${guildId}-`) && 
         p.voiceChannelId === voiceChannelId
@@ -72,7 +75,8 @@ class PlayerManager {
    * @returns {Array<Player>}
    */
   static listGuildPlayers(client, guildId) {
-    return Array.from(client.manager.players.values())
+    const playersMap = client.manager.players.cache || client.manager.players;
+    return Array.from(playersMap.values())
       .filter(p => p.guildId.startsWith(`${guildId}-`))
       .sort((a, b) => (a.metadata?.createdAt || 0) - (b.metadata?.createdAt || 0));
   }
@@ -97,7 +101,8 @@ class PlayerManager {
     let cleaned = 0;
     const now = Date.now();
     
-    for (const [id, player] of client.manager.players) {
+    const playersMap = client.manager.players.cache || client.manager.players;
+    for (const [id, player] of playersMap) {
       const lastActivity = player.metadata?.lastActivity || player.metadata?.createdAt || 0;
       const inactive = now - lastActivity > inactiveThresholdMs;
       
