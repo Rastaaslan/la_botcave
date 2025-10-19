@@ -1,4 +1,4 @@
-// slash/play.js - VERSION PORU MULTI-INSTANCE
+// slash/play.js - VERSION PORU MULTI-INSTANCE COMPLÈTE
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { buildEmbed } = require('../utils/embedHelper');
 const { PlayerManager } = require('../utils/playerManager');
@@ -6,7 +6,7 @@ const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...ar
 
 const LOG_PREFIX = '[PLAY]';
 
-// Regex patterns (inchangé)
+// Regex patterns
 const PATTERNS = {
   SC_PLAYLIST: /soundcloud\.com\/[^/]+\/sets\/[^/?]+/i,
   SC_TRACK: /soundcloud\.com\/[^/]+\/[^/?]+/i,
@@ -26,7 +26,7 @@ const SPOTIFY_CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET || '';
 let spotifyAccessToken = null;
 let tokenExpiry = 0;
 
-// Logging helpers (inchangé)
+// Logging helpers
 const logInfo = (id, tag, payload = '') => {
   console.log(`${LOG_PREFIX} [${id}] ${tag}`, typeof payload === 'object' ? JSON.stringify(payload) : payload);
 };
@@ -39,7 +39,7 @@ const logError = (id, tag, payload = '') => {
   console.error(`${LOG_PREFIX} [${id}] ❌ ${tag}`, typeof payload === 'object' ? JSON.stringify(payload) : payload);
 };
 
-// Fonctions utilitaires (inchangées - normalize, stripTitleNoise, etc.)
+// Normalisation
 function normalize(s) {
   if (!s) return '';
   return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -92,9 +92,7 @@ async function scSearch(client, requester, q, limit, reqId) {
       source: 'soundcloud',
       requester 
     });
-    const tracks = (res?.tracks || [])
-      .slice(0, limit)
-      .filter(t => t && !isYouTubeUri(t.info.uri));
+    const tracks = (res?.tracks || []).slice(0, limit).filter(t => t && !isYouTubeUri(t.info.uri));
     logInfo(reqId, 'scSearch:results', { count: tracks.length });
     return tracks;
   } catch (err) {
@@ -103,7 +101,7 @@ async function scSearch(client, requester, q, limit, reqId) {
   }
 }
 
-// Spotify token (inchangé)
+// Spotify token
 async function getSpotifyAccessToken(reqId) {
   try {
     if (spotifyAccessToken && Date.now() < tokenExpiry) return spotifyAccessToken;
@@ -128,24 +126,150 @@ async function getSpotifyAccessToken(reqId) {
   }
 }
 
-// Les fonctions extractYouTubePlaylistTracks, extractSpotifyPlaylistTracks,
-// fetchYouTubeOEmbed, fetchSpotifyOG, fetchAppleMusicOG restent IDENTIQUES
-// (Je les skip pour gagner de la place, copiez-les depuis votre play.js actuel)
+// YouTube playlist extraction
+async function extractYouTubePlaylistTracks(url, reqId) {
+  try {
+    logInfo(reqId, 'yt:playlist:start', { url });
+    const match = url.match(PATTERNS.YT_PLAYLIST);
+    const playlistId = match?.[1];
+    if (!playlistId) {
+      logWarn(reqId, 'yt:playlist:noId');
+      return { error: 'no_id' };
+    }
+    const playlistUrl = `https://www.youtube.com/playlist?list=${playlistId}`;
+    logInfo(reqId, 'yt:playlist:fetching', { playlistId, url: playlistUrl });
+    const resp = await fetch(playlistUrl, {
+      headers: { 
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9'
+      },
+      timeout: 15000
+    });
+    if (!resp.ok) {
+      logWarn(reqId, 'yt:playlist:http', { status: resp.status });
+      if (resp.status === 404) return { error: 'not_found' };
+      if (resp.status === 403) return { error: 'private' };
+      return { error: 'http_error' };
+    }
+    const html = await resp.text();
+    if (html.includes('This playlist is private') || html.includes('Cette playlist est privée')) {
+      logWarn(reqId, 'yt:playlist:private');
+      return { error: 'private' };
+    }
+    const dataMatch = html.match(/var ytInitialData = ({.+?});/);
+    if (!dataMatch) {
+      logWarn(reqId, 'yt:playlist:noData');
+      return { error: 'parse_failed' };
+    }
+    const data = JSON.parse(dataMatch[1]);
+    if (data?.alerts) {
+      const alertText = data.alerts.map(a => a?.alertRenderer?.text?.simpleText || a?.alertRenderer?.text?.runs?.[0]?.text).filter(Boolean).join(' ');
+      logWarn(reqId, 'yt:playlist:alert', { alertText });
+      if (/private/i.test(alertText)) return { error: 'private' };
+      if (/not found|deleted/i.test(alertText)) return { error: 'not_found' };
+      return { error: 'no_contents', message: alertText };
+    }
+    const contents = data?.contents?.twoColumnBrowseResultsRenderer?.tabs?.[0]?.tabRenderer?.content?.sectionListRenderer?.contents?.[0]?.itemSectionRenderer?.contents?.[0]?.playlistVideoListRenderer?.contents;
+    if (!contents || !Array.isArray(contents)) {
+      logWarn(reqId, 'yt:playlist:noContents');
+      return { error: 'no_contents' };
+    }
+    const tracks = [];
+    for (const item of contents) {
+      const vr = item?.playlistVideoRenderer;
+      if (!vr || !vr.videoId) continue;
+      const title = vr.title?.runs?.[0]?.text || vr.title?.simpleText || '';
+      const author = vr.shortBylineText?.runs?.[0]?.text || '';
+      if (title) {
+        tracks.push({
+          videoId: vr.videoId,
+          title: stripTitleNoise(title),
+          author: stripArtistNoise(author),
+          url: `https://www.youtube.com/watch?v=${vr.videoId}`
+        });
+      }
+    }
+    if (tracks.length === 0) {
+      logWarn(reqId, 'yt:playlist:noVideos');
+      return { error: 'no_videos' };
+    }
+    logInfo(reqId, 'yt:playlist:success', { count: tracks.length });
+    return tracks;
+  } catch (err) {
+    logError(reqId, 'yt:playlist:error', err.message);
+    return { error: 'extract_failed' };
+  }
+}
 
-// Matching sur SoundCloud adapté pour Poru
+// Spotify playlist extraction
+async function extractSpotifyPlaylistTracks(url, reqId) {
+  try {
+    logInfo(reqId, 'sp:playlist:start', { url });
+    const playlistMatch = url.match(PATTERNS.SP_PLAYLIST);
+    const albumMatch = url.match(PATTERNS.SP_ALBUM);
+    let type, id;
+    if (playlistMatch) {
+      type = 'playlist';
+      id = playlistMatch[1];
+    } else if (albumMatch) {
+      type = 'album';
+      id = albumMatch[1];
+    } else {
+      logWarn(reqId, 'sp:playlist:noId');
+      return [];
+    }
+    logInfo(reqId, 'sp:playlist:type', { type, id });
+    const token = await getSpotifyAccessToken(reqId);
+    const endpoint = type === 'playlist' 
+      ? `https://api.spotify.com/v1/playlists/${id}/tracks?limit=100`
+      : `https://api.spotify.com/v1/albums/${id}/tracks?limit=50`;
+    const tracks = [];
+    let nextUrl = endpoint;
+    let page = 0;
+    while (nextUrl && page < 10) {
+      page++;
+      logInfo(reqId, 'sp:playlist:page', { page });
+      const resp = await fetch(nextUrl, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' },
+        timeout: 10000
+      });
+      if (!resp.ok) {
+        logWarn(reqId, 'sp:playlist:http', { status: resp.status });
+        break;
+      }
+      const data = await resp.json();
+      for (const item of data.items || []) {
+        const track = item.track || item;
+        if (!track || !track.name) continue;
+        const title = track.name;
+        const artists = track.artists?.map(a => a.name).join(', ') || '';
+        tracks.push({
+          title: stripTitleNoise(title),
+          author: stripArtistNoise(artists),
+          query: `${artists} ${title}`.trim()
+        });
+      }
+      nextUrl = data.next;
+    }
+    logInfo(reqId, 'sp:playlist:success', { count: tracks.length });
+    return tracks;
+  } catch (err) {
+    logError(reqId, 'sp:playlist:error', err.message);
+    return [];
+  }
+}
+
+// Matching sur SoundCloud
 async function matchTrackOnSoundCloud(client, requester, track, reqId) {
   try {
     const query = track.query || `${track.author} ${track.title}`.trim();
     logInfo(reqId, 'sc:match:start', { query });
-
     const strategies = [
       { name: 'exact', query: `"${track.author}" "${track.title}"`, limit: 5 },
       { name: 'standard', query: `${track.author} ${track.title}`, limit: 8 },
       { name: 'title-only', query: track.title, limit: 10 }
     ];
-    
     let allResults = [];
-    
     for (const strategy of strategies) {
       if (!strategy.query.trim()) continue;
       logInfo(reqId, 'sc:match:strategy', { name: strategy.name });
@@ -155,13 +279,10 @@ async function matchTrackOnSoundCloud(client, requester, track, reqId) {
         if (strategy.name === 'exact' && results.length >= 3) break;
       }
     }
-    
     if (allResults.length === 0) {
       logWarn(reqId, 'sc:match:noResults');
       return null;
     }
-    
-    // Dédupliquer
     const uniqueResults = [];
     const seenUris = new Set();
     for (const result of allResults) {
@@ -171,15 +292,11 @@ async function matchTrackOnSoundCloud(client, requester, track, reqId) {
         uniqueResults.push(result);
       }
     }
-    
     logInfo(reqId, 'sc:match:candidates', { total: uniqueResults.length });
-
-    // Scoring
     const wantTitleTokens = coreTokens(track.title);
     const normalizedWantAuthor = normalize(track.author);
     let bestMatch = null;
     let bestScore = 0;
-
     for (const result of uniqueResults) {
       const resultTitle = result.info.title || '';
       const resultAuthor = result.info.author || '';
@@ -199,13 +316,11 @@ async function matchTrackOnSoundCloud(client, requester, track, reqId) {
         bestMatch = result;
       }
     }
-
     const threshold = 0.38;
     if (bestMatch && bestScore >= threshold) {
       logInfo(reqId, 'sc:match:found', { score: bestScore.toFixed(2), title: bestMatch.info.title });
       return bestMatch;
     }
-
     logWarn(reqId, 'sc:match:lowScore', { bestScore: bestScore ? bestScore.toFixed(2) : 'N/A', threshold });
     return null;
   } catch (err) {
@@ -214,7 +329,95 @@ async function matchTrackOnSoundCloud(client, requester, track, reqId) {
   }
 }
 
-// COMMANDE PRINCIPALE - VOIR PARTIE 2
+// YouTube OEmbed
+async function fetchYouTubeOEmbed(url, reqId) {
+  try {
+    logInfo(reqId, 'yt:oembed:start');
+    const oembedUrl = new URL('https://www.youtube.com/oembed');
+    oembedUrl.searchParams.set('url', url);
+    oembedUrl.searchParams.set('format', 'json');
+    const resp = await fetch(oembedUrl.toString(), { headers: { 'Accept': 'application/json' }, timeout: 10000 });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const result = { title: stripTitleNoise(data?.title || ''), author: stripArtistNoise(data?.author_name || '') };
+    logInfo(reqId, 'yt:oembed:success', result);
+    return result;
+  } catch (err) {
+    logError(reqId, 'yt:oembed:error', err.message);
+    return null;
+  }
+}
+
+// Spotify OG
+async function fetchSpotifyOG(url, reqId) {
+  try {
+    logInfo(reqId, 'sp:og:start', { url });
+    const resp = await fetch(url, { 
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': 'text/html,application/xhtml+xml' },
+      timeout: 10000
+    });
+    if (!resp.ok) {
+      logWarn(reqId, 'sp:og:http', { status: resp.status });
+      return null;
+    }
+    const html = await resp.text();
+    const getMeta = (prop) => {
+      const match = html.match(new RegExp(`<meta\\s+property="${prop}"\\s+content="([^"]*)"`, 'i'));
+      return match?.[1] || '';
+    };
+    const ogDescription = getMeta('og:description');
+    let title = '';
+    let artist = '';
+    if (ogDescription) {
+      const parts = ogDescription.split('·').map(p => p.trim());
+      if (parts.length >= 2) {
+        artist = parts[0];
+        title = parts[1];
+      }
+    }
+    if (!title) {
+      logWarn(reqId, 'sp:og:noTitle');
+      return null;
+    }
+    const result = { title: stripTitleNoise(title), author: stripArtistNoise(artist) };
+    logInfo(reqId, 'sp:og:success', result);
+    return result;
+  } catch (err) {
+    logError(reqId, 'sp:og:error', err.message);
+    return null;
+  }
+}
+
+// Apple Music OG
+async function fetchAppleMusicOG(url, reqId) {
+  try {
+    logInfo(reqId, 'am:og:start', { url });
+    const resp = await fetch(url, { 
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      redirect: 'follow',
+      timeout: 10000
+    });
+    if (!resp.ok) {
+      logWarn(reqId, 'am:og:http', { status: resp.status });
+      return null;
+    }
+    const html = await resp.text();
+    const titleMatch = html.match(/"name":"([^"]+)"/);
+    const artistMatch = html.match(/"artist(?:Name)?":"([^"]+)"/);
+    if (!titleMatch) {
+      logWarn(reqId, 'am:og:noTitle');
+      return null;
+    }
+    const result = { title: stripTitleNoise(titleMatch[1] || ''), author: stripArtistNoise(artistMatch?.[1] || '') };
+    logInfo(reqId, 'am:og:success', result);
+    return result;
+  } catch (err) {
+    logError(reqId, 'am:og:error', err.message);
+    return null;
+  }
+}
+
+// COMMANDE PRINCIPALE
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('play')
